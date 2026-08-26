@@ -773,7 +773,10 @@ const JS_TEXT = `(function () {
       '<div class="pbo-body" id="pbo-body"><div class="pbo-loading">Loading…</div></div>';
     document.body.appendChild(ov);
     ov.addEventListener("click", function (e) {
-      if (e.target === ov) ov.classList.remove("pb-show");
+      // Blank areas close the board: the backdrop itself and the body's own
+      // empty space (grid gaps / below-content area). Cards, columns, tabs and
+      // buttons are children, so clicks there never reach this branch.
+      if (e.target === ov || e.target.id === "pbo-body") { ov.classList.remove("pb-show"); return; }
       var rmEl = e.target.closest && e.target.closest("[data-remove]");
       if (rmEl) { e.stopPropagation(); removeRepo(rmEl.getAttribute("data-remove")); return; }
       var tabAddEl = e.target.closest && e.target.closest("[data-tab-add]");
@@ -876,7 +879,12 @@ const JS_TEXT = `(function () {
 
   // Alt+P always opens the board, even if the widget failed to render
   document.addEventListener("keydown", function (e) {
-    if (e.altKey && !e.ctrlKey && !e.metaKey && (e.key === "p" || e.key === "P")) { e.preventDefault(); openBoard(); }
+    if (e.altKey && !e.ctrlKey && !e.metaKey && (e.key === "p" || e.key === "P")) {
+      e.preventDefault();
+      var shown = document.getElementById("pr-board-overlay");
+      if (shown && shown.classList.contains("pb-show")) shown.classList.remove("pb-show");
+      else openBoard();
+    }
   });
 
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);
