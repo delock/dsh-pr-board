@@ -394,6 +394,7 @@ const CSS_TEXT = `
 #pr-board-widget .pbw-repo .pbw-chip.me{color:#60a5fa}
 #pr-board-widget .pbw-repo .pbw-chip.author{color:#fbbf24}
 #pr-board-widget .pbw-repo .pbw-chip.ready{color:#34d399}
+#pr-board-widget .pbw-repo .pbw-chip.inbox{color:#c4b5fd}
 #pr-board-widget.pbw-pulse{animation:pbw-flash 1.2s 3}
 @keyframes pbw-flash{50%{background:color-mix(in srgb,#60a5fa 25%,transparent)}}
 #pr-board-overlay{position:fixed;inset:0;z-index:2147483000;display:none;background:color-mix(in srgb,#000000 62%,transparent);backdrop-filter:blur(3px)}
@@ -412,7 +413,7 @@ const CSS_TEXT = `
 #pr-board-overlay .pbo-tab-add{border-style:dashed;padding:3px 12px;font-weight:700}
 #pr-board-overlay select,#pr-board-overlay .pbo-btn{padding:4px 10px;border-radius:6px;border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.08);color:#fff;font-size:12px;cursor:pointer}
 #pr-board-overlay .pbo-btn:hover{background:rgba(255,255,255,.18)}
-#pr-board-overlay .pbo-body{flex:1;overflow:auto;display:grid;gap:10px;padding:12px 14px;grid-template-columns:repeat(5,minmax(230px,1fr));align-content:start}
+#pr-board-overlay .pbo-body{flex:1;overflow:auto;display:grid;gap:10px;padding:12px 14px;grid-template-columns:repeat(5,minmax(230px,1fr));align-content:start;align-items:start}
 @media (max-width:1100px){#pr-board-overlay .pbo-body{grid-template-columns:repeat(2,minmax(230px,1fr))}}
 #pr-board-overlay .pbo-col{display:flex;flex-direction:column;gap:8px;min-width:0}
 #pr-board-overlay .pbo-col-head{display:flex;align-items:center;gap:6px;font-size:12px;font-weight:700;color:#fff;padding:2px 4px;flex:none}
@@ -643,7 +644,8 @@ const JS_TEXT = `(function () {
       html += '<div class="pbw-repo" data-widget-repo="' + esc(repo) + '" title="' + esc(repo) + '"><span class="pbw-name">' +
         esc(displayName(repo)) + '</span><span class="pbw-chip me" title="Waiting on me">' + c.waiting_me +
         '</span><span class="pbw-chip author" title="Waiting on author">' + c.waiting_author +
-        '</span><span class="pbw-chip ready" title="Ready to merge">' + c.ready_merge + "</span></div>";
+        '</span><span class="pbw-chip ready" title="Ready to merge">' + c.ready_merge +
+        '</span><span class="pbw-chip inbox" title="Inbox: new PRs to triage">' + c.inbox + "</span></div>";
     });
     row.innerHTML = html;
   }
@@ -773,10 +775,16 @@ const JS_TEXT = `(function () {
       '<div class="pbo-body" id="pbo-body"><div class="pbo-loading">Loading…</div></div>';
     document.body.appendChild(ov);
     ov.addEventListener("click", function (e) {
-      // Blank areas close the board: the backdrop itself and the body's own
-      // empty space (grid gaps / below-content area). Cards, columns, tabs and
-      // buttons are children, so clicks there never reach this branch.
-      if (e.target === ov || e.target.id === "pbo-body") { ov.classList.remove("pb-show"); return; }
+      // Blank areas close the board. The overlay itself is fully covered by its
+      // children, so "blank" = structural, non-interactive elements hit exactly:
+      // the body grid, a column's empty stretch, an "empty" placeholder, or the
+      // tab bar's leftover space. Exact target checks (not closest) so clicks on
+      // cards/buttons inside those containers never match this branch.
+      var t = e.target;
+      if (t === ov || t.id === "pbo-body" || (t.classList && (t.classList.contains("pbo-col") || t.classList.contains("pbo-empty") || t.classList.contains("pbo-tabs")))) {
+        ov.classList.remove("pb-show");
+        return;
+      }
       var rmEl = e.target.closest && e.target.closest("[data-remove]");
       if (rmEl) { e.stopPropagation(); removeRepo(rmEl.getAttribute("data-remove")); return; }
       var tabAddEl = e.target.closest && e.target.closest("[data-tab-add]");

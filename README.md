@@ -64,7 +64,7 @@ Then restart the web profile and refresh the page.
    **Alt+P**). On first open you're prompted to add a repository
    (`owner/name`, e.g. `octocat/hello-world`).
 2. **Multiple repositories**: the widget lists every monitored repo with its
-   own Me / Author / Ready counters. The **+** button in the widget header
+   own Me / Author / Ready / Inbox counters. The **+** button in the widget header
    (or on the board's tab bar) adds another repo; hovering a tab in the board
    shows an **×** to stop monitoring it (removal lives inside the board only).
    Repos are identified by short name, falling back to the full `owner/name`
