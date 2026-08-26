@@ -273,6 +273,23 @@ async function boardData(repo, me, fresh) {
   return promise;
 }
 
+async function boardDataMulti(repos, me, fresh) {
+  // One collect() per repo, each cached independently; a repo that fails
+  // degrades to its own error entry instead of sinking the whole response.
+  const out = await Promise.all(
+    repos.map(async (repo) => {
+      try {
+        const d = await boardData(repo, me, fresh);
+        if (!d.ok) return { repo, ok: false, error: d.error };
+        return { repo, ok: true, counts: d.counts, columns: d.columns };
+      } catch (e) {
+        return { repo, ok: false, error: String((e && e.message) || e) };
+      }
+    })
+  );
+  return { ok: true, user: me, generatedAt: new Date().toISOString(), repos: out };
+}
+
 async function resolveUser(user) {
   if (user) return user;
   const r = await gh(["api", "user", "-q", ".login"]);
@@ -322,13 +339,13 @@ export function apply(ctx) {
         path: "/api/pr-board/data",
         handler: (req, res) => {
           if (req.method !== "GET") return json(res, 405, { ok: false, error: "method-not-allowed" });
-          const repo = queryParam(req, "repo").trim();
-          if (!/^[^/\s]+\/[^/\s]+$/.test(repo)) {
-            return json(res, 400, { ok: false, error: "Repository not configured: set owner/name via Settings in the board header" });
+          const repos = queryParam(req, "repos").split(",").map((r) => r.trim()).filter(Boolean);
+          if (!repos.length) {
+            return json(res, 400, { ok: false, error: "No repositories configured: add one via + in the sidebar widget" });
           }
           const fresh = queryParam(req, "fresh") === "1";
           resolveUser(queryParam(req, "user"))
-            .then((me) => boardData(repo, me, fresh))
+            .then((me) => boardDataMulti(repos, me, fresh))
             .then((v) => json(res, 200, v), (e) => json(res, 500, { ok: false, error: String((e && e.message) || e) }));
         },
       },
@@ -362,12 +379,21 @@ export function apply(ctx) {
 const CSS_TEXT = `
 #pr-board-widget{flex:none;margin-top:8px;padding:8px 2px 2px;border-top:1px solid color-mix(in srgb,currentColor 14%,transparent);font-size:12px;color:inherit;min-width:0;cursor:pointer}
 #pr-board-widget .pbw-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:5px;font-weight:600;gap:6px}
-#pr-board-widget .pbw-row{display:flex;gap:4px;align-items:center;flex-wrap:wrap}
 #pr-board-widget .pbw-chip{display:inline-flex;align-items:center;gap:3px;padding:1px 6px;border-radius:8px;font-size:11px;font-weight:600;background:color-mix(in srgb,currentColor 10%,transparent)}
 #pr-board-widget .pbw-chip b{font-weight:700}
 #pr-board-widget .pbw-chip.me b{color:#60a5fa}
 #pr-board-widget .pbw-chip.author b{color:#fbbf24}
 #pr-board-widget .pbw-chip.ready b{color:#34d399}
+#pr-board-widget .pbw-add{flex:none;width:18px;height:18px;line-height:16px;text-align:center;padding:0;border:1px solid color-mix(in srgb,currentColor 25%,transparent);border-radius:6px;background:transparent;color:inherit;font-size:13px;font-weight:700;cursor:pointer}
+#pr-board-widget .pbw-add:hover{background:color-mix(in srgb,currentColor 15%,transparent)}
+#pr-board-widget .pbw-list{display:flex;flex-direction:column;gap:3px}
+#pr-board-widget .pbw-repo{display:flex;align-items:center;gap:4px;min-width:0;padding:1px 0;border-radius:6px}
+#pr-board-widget .pbw-repo:hover{background:color-mix(in srgb,currentColor 10%,transparent)}
+#pr-board-widget .pbw-repo .pbw-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
+#pr-board-widget .pbw-repo .pbw-chip{flex:none;min-width:16px;justify-content:center;padding:1px 4px;font-weight:700}
+#pr-board-widget .pbw-repo .pbw-chip.me{color:#60a5fa}
+#pr-board-widget .pbw-repo .pbw-chip.author{color:#fbbf24}
+#pr-board-widget .pbw-repo .pbw-chip.ready{color:#34d399}
 #pr-board-widget.pbw-pulse{animation:pbw-flash 1.2s 3}
 @keyframes pbw-flash{50%{background:color-mix(in srgb,#60a5fa 25%,transparent)}}
 #pr-board-overlay{position:fixed;inset:0;z-index:2147483000;display:none;background:color-mix(in srgb,#000000 62%,transparent);backdrop-filter:blur(3px)}
@@ -376,6 +402,14 @@ const CSS_TEXT = `
 #pr-board-overlay .pbo-title{font-size:15px;font-weight:700}
 #pr-board-overlay .pbo-sub{font-size:12px;opacity:.65;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #pr-board-overlay .pbo-spacer{flex:1}
+#pr-board-overlay .pbo-tabs{display:flex;gap:6px;align-items:center;padding:8px 14px 0;flex-wrap:wrap;flex:none}
+#pr-board-overlay .pbo-tab{display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:8px;border:1px solid rgba(255,255,255,.15);background:rgba(255,255,255,.05);color:rgba(255,255,255,.75);font-size:12px;font-weight:600;cursor:pointer;max-width:220px}
+#pr-board-overlay .pbo-tab:hover{background:rgba(255,255,255,.12);color:#fff}
+#pr-board-overlay .pbo-tab.pb-active{background:rgba(31,111,235,.35);border-color:rgba(96,165,250,.5);color:#fff}
+#pr-board-overlay .pbo-tab .pbo-tab-x{display:none;font-style:normal;font-size:13px;line-height:1;opacity:.7;padding:0 1px}
+#pr-board-overlay .pbo-tab:hover .pbo-tab-x{display:inline-block}
+#pr-board-overlay .pbo-tab .pbo-tab-x:hover{opacity:1;color:#fca5a5}
+#pr-board-overlay .pbo-tab-add{border-style:dashed;padding:3px 12px;font-weight:700}
 #pr-board-overlay select,#pr-board-overlay .pbo-btn{padding:4px 10px;border-radius:6px;border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.08);color:#fff;font-size:12px;cursor:pointer}
 #pr-board-overlay .pbo-btn:hover{background:rgba(255,255,255,.18)}
 #pr-board-overlay .pbo-body{flex:1;overflow:auto;display:grid;gap:10px;padding:12px 14px;grid-template-columns:repeat(5,minmax(230px,1fr));align-content:start}
@@ -406,7 +440,7 @@ const CSS_TEXT = `
 
 const JS_TEXT = `(function () {
   var CFG_KEY = "prboard.cfg", LAST_KEY = "prboard.last";
-  var DEFAULTS = { repo: "", user: "", interval: 5, sort: { waiting_me: "new", waiting_author: "new" } };
+  var DEFAULTS = { repos: [], user: "", interval: 5, sort: { waiting_me: "new", waiting_author: "new" } };
   var COLS = [
     { key: "waiting_me", name: "Waiting on me", color: "#60a5fa" },
     { key: "waiting_author", name: "Waiting on author", color: "#fbbf24" },
@@ -425,13 +459,35 @@ const JS_TEXT = `(function () {
     "conflict": "Approved but conflicting",
     "draft": "Approved but draft"
   };
-  var cfg = loadCfg(), pollTimer = null, data = null, busy = false;
+  var cfg = loadCfg(), pollTimer = null, data = null, busy = false, activeRepo = "";
 
   function loadCfg() {
-    try { return Object.assign({}, DEFAULTS, JSON.parse(localStorage.getItem(CFG_KEY) || "{}")); }
-    catch (e) { return Object.assign({}, DEFAULTS); }
+    var c;
+    try { c = Object.assign({}, DEFAULTS, JSON.parse(localStorage.getItem(CFG_KEY) || "{}")); }
+    catch (e) { c = Object.assign({}, DEFAULTS); }
+    // migrate the old single-repo config to the repos array
+    if (!Array.isArray(c.repos)) c.repos = [];
+    if (c.repo && /^[^/\\s]+\\/[^/\\s]+$/.test(c.repo) && c.repos.indexOf(c.repo) < 0) c.repos.push(c.repo);
+    delete c.repo;
+    if (!c.sort) c.sort = { waiting_me: "new", waiting_author: "new" };
+    return c;
   }
   function saveCfg() { try { localStorage.setItem(CFG_KEY, JSON.stringify(cfg)); } catch (e) {} }
+
+  // "owner/name" -> "name" for display; falls back to the full id when two
+  // monitored repos share a short name.
+  function shortName(repo) { return repo.slice(repo.indexOf("/") + 1); }
+  function displayName(repo) {
+    var n = shortName(repo);
+    var clash = cfg.repos.some(function (r) { return r !== repo && shortName(r) === n; });
+    return clash ? repo : n;
+  }
+  function repoData(repo) {
+    if (!data || !data.repos) return null;
+    for (var i = 0; i < data.repos.length; i++) if (data.repos[i].repo === repo) return data.repos[i];
+    return null;
+  }
+  function currentRepo() { return activeRepo && cfg.repos.indexOf(activeRepo) >= 0 ? activeRepo : (cfg.repos[0] || ""); }
 
   function api(path, opts) { return fetch(path, opts).then(function (r) { return r.json(); }); }
 
@@ -451,15 +507,15 @@ const JS_TEXT = `(function () {
 
   // ---------- data loading + transition detection ----------
   function refresh(fresh, quiet) {
-    if (!cfg.repo) {
-      data = { ok: false, error: "Repository not configured" };
+    if (!cfg.repos.length) {
+      data = { ok: false, error: "No repositories added yet" };
       renderWidget();
       renderBoard();
       return Promise.resolve();
     }
     if (busy) return Promise.resolve();
     busy = true;
-    var q = "?repo=" + encodeURIComponent(cfg.repo) + "&user=" + encodeURIComponent(cfg.user) + (fresh ? "&fresh=1" : "");
+    var q = "?repos=" + encodeURIComponent(cfg.repos.join(",")) + "&user=" + encodeURIComponent(cfg.user) + (fresh ? "&fresh=1" : "");
     return api("/api/pr-board/data" + q).then(function (v) {
       busy = false;
       data = v;
@@ -472,22 +528,30 @@ const JS_TEXT = `(function () {
   function detectTransitions(v) {
     var prev = null;
     try { prev = JSON.parse(localStorage.getItem(LAST_KEY) || "null"); } catch (e) {}
-    var nowMe = (v.columns.waiting_me || []).map(function (c) { return c.number; });
-    if (prev && prev.repo === v.repo) {
+    var prevMap = prev && typeof prev === "object" && prev.repos ? prev.repos : {};
+    var nextMap = {};
+    var anyArrived = false;
+    (v.repos || []).forEach(function (rd) {
+      if (!rd.ok) return;
+      var nowMe = (rd.columns.waiting_me || []).map(function (c) { return c.number; });
+      nextMap[rd.repo] = nowMe;
+      var old = prevMap[rd.repo];
+      if (!old) return;
       var prevSet = {};
-      (prev.waiting_me || []).forEach(function (n) { prevSet[n] = 1; });
+      (old || []).forEach(function (n) { prevSet[n] = 1; });
       var arrived = nowMe.filter(function (n) { return !prevSet[n]; });
       arrived.forEach(function (n) {
-        var c = v.columns.waiting_me.filter(function (x) { return x.number === n; })[0];
-        toast("PR #" + n + (c ? " " + c.title.slice(0, 40) : "") + " is back to you" +
+        var c = rd.columns.waiting_me.filter(function (x) { return x.number === n; })[0];
+        anyArrived = true;
+        toast("[" + displayName(rd.repo) + "] PR #" + n + (c ? " " + c.title.slice(0, 40) : "") + " is back to you" +
           (c && REASONS[c.reason] ? " (" + REASONS[c.reason] + ")" : ""), c && c.url);
       });
-      if (arrived.length) {
-        var w = document.getElementById("pr-board-widget");
-        if (w) { w.classList.remove("pbw-pulse"); void w.offsetWidth; w.classList.add("pbw-pulse"); }
-      }
+    });
+    if (anyArrived) {
+      var w = document.getElementById("pr-board-widget");
+      if (w) { w.classList.remove("pbw-pulse"); void w.offsetWidth; w.classList.add("pbw-pulse"); }
     }
-    try { localStorage.setItem(LAST_KEY, JSON.stringify({ repo: v.repo, t: Date.now(), waiting_me: nowMe })); } catch (e) {}
+    try { localStorage.setItem(LAST_KEY, JSON.stringify({ t: Date.now(), repos: nextMap })); } catch (e) {}
   }
 
   function toast(text, url) {
@@ -528,8 +592,17 @@ const JS_TEXT = `(function () {
   }
 
   function widgetHtml() {
-    return '<div class="pbw-head"><span>PR Board</span></div><div class="pbw-row" id="pbw-row">' +
-      '<span class="pbw-chip" style="opacity:.6">Loading…</span></div>';
+    return '<div class="pbw-head"><span>PR Board</span><button class="pbw-add" id="pbw-add" title="Add a repository">+</button></div>' +
+      '<div class="pbw-list" id="pbw-row"><span class="pbw-chip" style="opacity:.6">Loading…</span></div>';
+  }
+
+  // Shared widget click handling: + adds a repo, a repo row opens its board
+  function widgetClick(e) {
+    var addEl = e.target.closest && e.target.closest("#pbw-add");
+    if (addEl) { e.stopPropagation(); addRepo(); return; }
+    var repoEl = e.target.closest && e.target.closest("[data-widget-repo]");
+    if (repoEl) { openBoard(repoEl.getAttribute("data-widget-repo")); return; }
+    openBoard();
   }
 
   // Mount the widget into the sidebar (move + clear pill inline styles if it exists)
@@ -539,7 +612,7 @@ const JS_TEXT = `(function () {
       w = document.createElement("div");
       w.id = "pr-board-widget";
       w.innerHTML = widgetHtml();
-      w.onclick = openBoard;
+      w.addEventListener("click", widgetClick);
     } else {
       w.style.cssText = "";
     }
@@ -550,19 +623,29 @@ const JS_TEXT = `(function () {
   function renderWidget() {
     var row = document.getElementById("pbw-row");
     if (!row) return;
-    if (!cfg.repo) {
-      row.innerHTML = '<span class="pbw-chip" style="opacity:.6">Not configured · click to set up</span>';
+    if (!cfg.repos.length) {
+      row.innerHTML = '<span class="pbw-chip" style="opacity:.6">No repositories · + to add one</span>';
       return;
     }
     if (!data || !data.ok) {
       row.innerHTML = '<span class="pbw-chip" style="opacity:.6">' + esc((data && data.error) || "Loading…") + "</span>";
       return;
     }
-    var c = data.counts;
-    row.innerHTML =
-      '<span class="pbw-chip me">Me <b>' + c.waiting_me + "</b></span>" +
-      '<span class="pbw-chip author">Author <b>' + c.waiting_author + "</b></span>" +
-      '<span class="pbw-chip ready">Ready <b>' + c.ready_merge + "</b></span>";
+    var html = "";
+    cfg.repos.forEach(function (repo) {
+      var rd = repoData(repo);
+      if (!rd || !rd.ok) {
+        html += '<div class="pbw-repo" data-widget-repo="' + esc(repo) + '" title="' + esc(repo) + '"><span class="pbw-name">' +
+          esc(displayName(repo)) + '</span><span class="pbw-chip" style="opacity:.6">error</span></div>';
+        return;
+      }
+      var c = rd.counts;
+      html += '<div class="pbw-repo" data-widget-repo="' + esc(repo) + '" title="' + esc(repo) + '"><span class="pbw-name">' +
+        esc(displayName(repo)) + '</span><span class="pbw-chip me" title="Waiting on me">' + c.waiting_me +
+        '</span><span class="pbw-chip author" title="Waiting on author">' + c.waiting_author +
+        '</span><span class="pbw-chip ready" title="Ready to merge">' + c.ready_merge + "</span></div>";
+    });
+    row.innerHTML = html;
   }
 
   // ---------- board ----------
@@ -580,16 +663,32 @@ const JS_TEXT = `(function () {
   }
 
   function renderBoard() {
+    var tabs = document.getElementById("pbo-tabs");
     var body = document.getElementById("pbo-body");
     if (!body) return;
+    // repo tabs: click to switch, hover shows × to remove (deletion lives here, not in the widget)
+    if (tabs) {
+      var th = "";
+      cfg.repos.forEach(function (repo) {
+        var act = repo === currentRepo();
+        th += '<span class="pbo-tab' + (act ? " pb-active" : "") + '" data-tab="' + esc(repo) + '" title="' + esc(repo) + '">' +
+          esc(displayName(repo)) + '<i class="pbo-tab-x" data-remove="' + esc(repo) + '" title="Stop monitoring ' + esc(repo) + '">×</i></span>';
+      });
+      th += '<span class="pbo-tab pbo-tab-add" data-tab-add="1" title="Add a repository">+</span>';
+      tabs.innerHTML = th;
+    }
     if (!data) { body.innerHTML = '<div class="pbo-loading">Loading…</div>'; return; }
-    if (!cfg.repo) { body.innerHTML = '<div class="pbo-error">Repository not configured: set owner/name via Settings in the board header (e.g. octocat/hello-world)</div>'; return; }
+    if (!cfg.repos.length) { body.innerHTML = '<div class="pbo-error">No repositories yet: add one with + (e.g. octocat/hello-world)</div>'; return; }
     if (!data.ok) { body.innerHTML = '<div class="pbo-error">' + esc(data.error || "load failed") + "</div>"; return; }
+    var repo = currentRepo();
+    var rd = repoData(repo);
     var sub = document.getElementById("pbo-sub");
-    if (sub) sub.textContent = data.repo + " · @" + data.user + " · updated " + timeAgo(data.generatedAt);
+    if (sub) sub.textContent = repo + " · @" + data.user + " · updated " + timeAgo(data.generatedAt);
+    if (!rd) { body.innerHTML = '<div class="pbo-loading">Loading…</div>'; return; }
+    if (!rd.ok) { body.innerHTML = '<div class="pbo-error">' + esc(repo) + ": " + esc(rd.error || "load failed") + "</div>"; return; }
     var html = "";
     COLS.forEach(function (col) {
-      var list = (data.columns && data.columns[col.key]) || [];
+      var list = (rd.columns && rd.columns[col.key]) || [];
       // First two columns support client-side sort toggling (new→old / old→new); others stay new→old
       var sortable = col.key === "waiting_me" || col.key === "waiting_author";
       var dir = (cfg.sort && cfg.sort[col.key]) || "new";
@@ -610,25 +709,48 @@ const JS_TEXT = `(function () {
     body.innerHTML = html;
   }
 
-  // Settings dialog: repo required (owner/name); blank username = host uses the gh login account
-  function openSettings() {
-    var repo = prompt("Repository (owner/name, e.g. octocat/hello-world)", cfg.repo || "");
+  // Add a repository to the watch list (widget + and board tab + both land here)
+  function addRepo() {
+    var repo = prompt("Repository to monitor (owner/name, e.g. octocat/hello-world)", "");
     if (repo === null) return;
     repo = repo.trim();
-    if (!/^[^/\\s]+\\/[^/\\s]+$/.test(repo)) { toast("Repo must be owner/name; not saved"); return; }
+    if (!/^[^/\\s]+\\/[^/\\s]+$/.test(repo)) { toast("Repo must be owner/name; not added"); return; }
+    if (cfg.repos.indexOf(repo) >= 0) { toast("Already monitoring " + repo); return; }
+    cfg.repos.push(repo);
+    activeRepo = repo;
+    saveCfg();
+    restartPolling();
+    refresh(true, true);
+  }
+
+  // Remove happens only inside the board (tab ×), with a confirm, per design
+  function removeRepo(repo) {
+    if (!confirm("Stop monitoring " + repo + "?")) return;
+    cfg.repos = cfg.repos.filter(function (r) { return r !== repo; });
+    if (activeRepo === repo) activeRepo = cfg.repos[0] || "";
+    try {
+      var last = JSON.parse(localStorage.getItem(LAST_KEY) || "null");
+      if (last && last.repos) { delete last.repos[repo]; localStorage.setItem(LAST_KEY, JSON.stringify(last)); }
+    } catch (e) {}
+    saveCfg();
+    refresh(false, true);
+  }
+
+  // Settings dialog: global username + interval (repos are managed via + / tab ×)
+  function openSettings() {
     var user = prompt("GitHub username (blank = use the gh login account)", cfg.user || "");
     if (user === null) return;
-    cfg.repo = repo;
     cfg.user = user.trim();
     saveCfg();
     restartPolling();
     refresh(true, true);
   }
 
-  function openBoard() {
+  function openBoard(repo) {
     var ov = ensureBoard();
     ov.classList.add("pb-show");
-    if (!cfg.repo) { openSettings(); return; } // first run: guide straight into setup
+    if (repo && cfg.repos.indexOf(repo) >= 0) activeRepo = repo;
+    if (!cfg.repos.length) { addRepo(); return; } // first run: guide straight into setup
     refresh(false, true);
   }
 
@@ -647,10 +769,17 @@ const JS_TEXT = `(function () {
       '<button class="pbo-btn" id="pbo-cfg">Settings</button>' +
       '<button class="pbo-btn" id="pbo-refresh">Refresh</button>' +
       '<button class="pbo-btn" id="pbo-close">Close</button></div>' +
+      '<div class="pbo-tabs" id="pbo-tabs"></div>' +
       '<div class="pbo-body" id="pbo-body"><div class="pbo-loading">Loading…</div></div>';
     document.body.appendChild(ov);
     ov.addEventListener("click", function (e) {
       if (e.target === ov) ov.classList.remove("pb-show");
+      var rmEl = e.target.closest && e.target.closest("[data-remove]");
+      if (rmEl) { e.stopPropagation(); removeRepo(rmEl.getAttribute("data-remove")); return; }
+      var tabAddEl = e.target.closest && e.target.closest("[data-tab-add]");
+      if (tabAddEl) { e.stopPropagation(); addRepo(); return; }
+      var tabEl = e.target.closest && e.target.closest("[data-tab]");
+      if (tabEl) { activeRepo = tabEl.getAttribute("data-tab"); renderBoard(); return; }
       var sortEl = e.target.closest && e.target.closest("[data-sort]");
       if (sortEl) {
         var sortKey = sortEl.getAttribute("data-sort");
@@ -670,7 +799,7 @@ const JS_TEXT = `(function () {
         api("/api/pr-board/watch", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ repo: cfg.repo, user: cfg.user, number: num })
+          body: JSON.stringify({ repo: currentRepo(), user: cfg.user, number: num })
         }).then(function (v) {
           if (v.ok) { toast("PR #" + num + " added to your review queue"); refresh(true, true); }
           else { toast("Claim failed: " + (v.error || "unknown error")); claimEl.disabled = false; claimEl.textContent = "I'll review"; }
@@ -704,7 +833,7 @@ const JS_TEXT = `(function () {
     w.id = "pr-board-widget";
     w.style.cssText = "position:fixed;left:14px;bottom:14px;z-index:2147482000;padding:7px 12px;border-radius:10px;background:#1f6feb;color:#fff;box-shadow:0 4px 14px rgba(0,0,0,.35)";
     w.innerHTML = widgetHtml();
-    w.onclick = openBoard;
+    w.addEventListener("click", widgetClick);
     document.body.appendChild(w);
   }
 

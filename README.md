@@ -60,15 +60,21 @@ Then restart the web profile and refresh the page.
 
 ## Configure / 配置
 
-1. Click the **PR 看板 / PR Board** widget at the bottom of the sidebar
-   (or press **Alt+P**). On first open you're prompted for:
-   - **Repository** — `owner/name`, e.g. `octocat/hello-world`
-   - **GitHub username** — leave blank to auto-use the `gh` login account
-2. Config is stored per-browser (localStorage). Change it anytime via the
-   **设置 / Settings** button in the board header.
+1. Click the **PR Board** widget at the bottom of the sidebar (or press
+   **Alt+P**). On first open you're prompted to add a repository
+   (`owner/name`, e.g. `octocat/hello-world`).
+2. **Multiple repositories**: the widget lists every monitored repo with its
+   own Me / Author / Ready counters. The **+** button in the widget header
+   (or on the board's tab bar) adds another repo; hovering a tab in the board
+   shows an **×** to stop monitoring it (removal lives inside the board only).
+   Repos are identified by short name, falling back to the full `owner/name`
+   when two monitored repos share a name.
+3. **GitHub username** — set via **Settings**; leave blank to auto-use the
+   `gh` login account (one identity across all repos).
+4. Config is stored per-browser (localStorage).
 
 配置存在浏览器 localStorage（每个浏览器/设备设一次）；用户名留空则自动采用 host
-上 `gh` 登录的账号。
+上 `gh` 登录的账号；多仓库以短名区分，重名时回退完整 `owner/name`。
 
 ## How states are computed / 状态如何计算
 
