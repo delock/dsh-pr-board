@@ -76,11 +76,12 @@ Then restart the web profile and refresh the page.
    through a local PR→session binding table first, then by title search
    (`repo#N`, which works once a session's LLM-generated title exists); a
    miss creates a new session in the configured workspace, binds it, and —
-   unless auto-prompt is off — sends it a first message naming the PR and
-   asking what you'd like to do (review the diff, check CI, draft a
-   comment, …). That first message is also what generates the session
-   title. With no workspace set (or via the per-card **↗** button) cards
-   open GitHub.
+   unless auto-prompt is off — sends it a first message naming the PR plus
+   the board's own snapshot (state, CI, flags), asking it to summarize what
+   has recently happened on the PR (events and standing, not a code
+   walkthrough) and then ask what you'd like to do. That first message is
+   also what generates the session title. With no workspace set (or via the
+   per-card **↗** button) cards open GitHub.
 5. Config is stored per-browser (localStorage).
 
 配置存在浏览器 localStorage（每个浏览器/设备设一次）；用户名留空则自动采用 host

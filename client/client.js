@@ -373,18 +373,34 @@
       return;
     }
     var repo = card.repo || currentRepo();
-    // Context, not a workflow: the first message tells the agent WHICH PR this
-    // session is about and has it ask what to do — the user may want any of
-    // review / CI / file history / drafting a reply / merge. It also seeds the
-    // LLM session title (which derives from this message), keeping title
+    // Context + memory restore, not a workflow: the first message tells the
+    // agent WHICH PR this session is about, hands it the board's own snapshot
+    // (state / reason / CI / flags) as a starting point, and asks it to
+    // summarize what has recently HAPPENED on the PR (events and standing,
+    // never a walkthrough of the code) before asking what to do. It also seeds
+    // the LLM session title (which derives from this message), keeping title
     // search by "repo#N" working.
+    var facts = [];
+    var stateNames = { waiting_me: "waiting on me", waiting_author: "waiting on author", ready_merge: "ready to merge", inbox: "untriaged" };
+    var fact = (stateNames[card.state] || card.state) + (REASONS[card.reason] ? " — " + REASONS[card.reason] : "");
+    facts.push(fact);
+    if (card.ci === "FAILURE" || card.ci === "ERROR") facts.push("CI failing");
+    else if (card.ci === "PENDING") facts.push("CI running");
+    else if (card.ci === "SUCCESS") facts.push("CI green");
+    if (card.mergeable === "CONFLICTING") facts.push("has conflicts");
+    if (card.isDraft) facts.push("draft");
     var text =
       "This session is for working on pull request " + repo + "#" + card.number +
-      (card.title ? ' — "' + String(card.title).slice(0, 80) + '"' : "") + ".\n" +
+      (card.title ? ' — "' + String(card.title).slice(0, 80) + '"' : "") +
+      (card.author ? " by @" + card.author : "") + ".\n" +
       "URL: " + card.url + "\n" +
-      "Don't start anything yet. First ask me what I'd like to do with this PR " +
-      "(e.g. review the diff, check CI status, inspect specific files, draft a comment, prepare the merge), " +
-      "then follow my direction. Never post anything to GitHub without my explicit approval.";
+      "My PR board currently says: " + facts.join("; ") + ".\n\n" +
+      "First, refresh that into an accurate picture: use gh (e.g. `gh pr view " + card.number + " --repo " + repo + " --json state,reviewDecision,statusCheckRollup` " +
+      "and the PR timeline / recent reviews and comments via `gh api`) to pull what has recently happened, " +
+      "then give me a brief summary of the EVENTS and current standing — who reviewed/commented/pushed what and when, CI and merge status. " +
+      "Do NOT explain or walk through the code; this is context restoration, not review.\n" +
+      "After the summary, ask me what I'd like to do next and follow my direction. " +
+      "Never post anything to GitHub without my explicit approval.";
     try {
       var r = sess.prompt([{ type: "text", text: text }], "queue");
       if (r && typeof r.then === "function") r.then(function (res) {
@@ -625,7 +641,7 @@
     saveCfg();
     var ap = prompt(
       "Auto-send PR context when a new review session is created?\n" +
-      "y = the agent is told which PR this session is for (number/title/URL) and asks what you want to do\n" +
+      "y = the agent summarizes what recently happened on the PR (events, not code) and then asks what you want to do\n" +
       "n = blank session; you type your own instructions\n" +
       "(the LLM session title derives from the first message, so 'y' also makes sessions searchable by PR number)\n" +
       "Current: " + (cfg.autoprompt === false ? "n" : "y"),
