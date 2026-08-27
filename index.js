@@ -86,7 +86,7 @@ const DETAIL_FIELDS = [
   "number title url state isDraft",
   "author { login }",
   "createdAt updatedAt",
-  "reviewDecision mergeable",
+  "reviewDecision mergeable isInMergeQueue",
   "commits(last:1) { nodes { commit { committedDate } } }",
   "reviews(last:8) { nodes { author { login } state submittedAt comments(last:5) { nodes { author { login } createdAt } } } }",
   "comments(last:8) { nodes { author { login } createdAt } }",
@@ -152,6 +152,12 @@ function classify(pr, me, requestedSet) {
   const approved = pr.reviewDecision === "APPROVED";
   const myApproved = myLastReview && myLastReview.state === "APPROVED" ? ts(myLastReview.submittedAt) : 0;
   const commitsAfterMyApproval = myApproved && lastCommit > myApproved;
+
+  // Merge queue: the merge machinery has taken over — neither my move nor the
+  // author's. Queue-enabled branch protection does not necessarily require
+  // reviews (reviewDecision can be null) and authors routinely rebase to get
+  // in, so this check must come before the approval/staleness branches.
+  if (pr.isInMergeQueue) return { state: "ready_merge", reason: "merge-queue" };
 
   if (approved && !commitsAfterMyApproval) {
     if (pr.isDraft) return { state: "waiting_author", reason: "draft" };

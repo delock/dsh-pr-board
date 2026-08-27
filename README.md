@@ -24,7 +24,7 @@ Review PR 本质是队列管理。GitHub 原生界面无法直接告诉你"作�
 | --- | --- | --- |
 | **Waiting on me** 等我行动 | Your move / 该你出手 | Review requested; or the author pushed/replied after your last review; or new commits landed after your approval |
 | **Waiting on author** 等作者行动 | Their move / 等作者 | You (or another maintainer) requested changes and the author has been quiet since; approved but draft or conflicting |
-| **Ready to merge** 可合并 | Green light / 绿灯 | `reviewDecision = APPROVED`, mergeable, not draft |
+| **Ready to merge** 可合并 | Green light / 绿灯 | `reviewDecision = APPROVED`, mergeable, not draft — or already sitting in a merge queue |
 | **Merged** 已合并 | Done / 完成 | Recently merged PRs you reviewed |
 | **Inbox** 新 PR 待分诊 | New & unclaimed | Newest open PRs you haven't touched — one click ("我来 review") adds you as reviewer |
 

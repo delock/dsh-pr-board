@@ -104,7 +104,8 @@
     "changes-requested-other": "Another maintainer requested changes",
     "awaiting-author": "Awaiting author",
     "conflict": "Approved but conflicting",
-    "draft": "Approved but draft"
+    "draft": "Approved but draft",
+    "merge-queue": "In merge queue"
   };
   var cfg = loadCfg(), pollTimer = null, data = null, busy = false, activeRepo = "";
   var currentCards = {}; // PR number -> card object (for the click-to-session flow)
