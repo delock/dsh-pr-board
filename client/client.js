@@ -291,13 +291,7 @@
       done = true;
       stop();
       finishJump(cur, card, true, tag);
-      try {
-        var b = CTX.sessions.binding && CTX.sessions.binding(cur);
-        if (b && b.session && b.session.rename) {
-          var rn = b.session.rename("review " + tag + " " + String(card.title || "").slice(0, 48));
-          if (rn && rn.catch) rn.catch(function () {});
-        }
-      } catch (e) {}
+      titleSession(cur, "review " + tag + " " + String(card.title || "").slice(0, 48), 8);
     };
     try { unsub = CTX.sessions.list.subscribe(check); } catch (e) {}
     var timer = setInterval(function () {
@@ -309,6 +303,33 @@
       }
       check();
     }, 250);
+  }
+
+  // Rename a freshly opened review session, with retries: binding() may not be
+  // materialized the instant `current` moves, and rename() resolves with
+  // {ok:false,...} rather than throwing — both were silently swallowed before.
+  // Every terminal failure is toasted with its wire cause so it is diagnosable.
+  function titleSession(sid, title, attempts) {
+    var b = null;
+    try { b = CTX.sessions.binding && CTX.sessions.binding(sid); } catch (e) {}
+    var sess = b && b.session;
+    if (!sess || typeof sess.rename !== "function") {
+      if (attempts > 0) return setTimeout(function () { titleSession(sid, title, attempts - 1); }, 500);
+      toast("Review title not set: session object unavailable");
+      return;
+    }
+    var retry = function () { attempts > 0 ? titleSession(sid, title, attempts - 1) : toast("Review title not set: " + title.slice(0, 50)); };
+    try {
+      var r = sess.rename(title);
+      if (r && typeof r.then === "function") r.then(function (res) {
+        if (res && res.ok) toast("Session titled: " + title.slice(0, 60));
+        else if (attempts > 0) setTimeout(function () { titleSession(sid, title, attempts - 1); }, 500);
+        else toast("Review title rejected: " + errText(res && res.error));
+      }, function (e) {
+        if (attempts > 0) setTimeout(function () { titleSession(sid, title, attempts - 1); }, 500);
+        else toast("Review title error: " + errText(e));
+      });
+    } catch (e) { retry(); }
   }
 
   function finishJump(sessionId, card, created, tag) {
