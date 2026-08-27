@@ -87,7 +87,7 @@ const DETAIL_FIELDS = [
   "author { login }",
   "createdAt updatedAt",
   "reviewDecision mergeable isInMergeQueue mergeStateStatus autoMergeRequest { enabledAt }",
-  "commits(last:1) { nodes { commit { committedDate } } }",
+  "commits(last:1) { nodes { commit { committedDate statusCheckRollup { state } } } }",
   "reviews(last:8) { nodes { author { login } state submittedAt comments(last:5) { nodes { author { login } createdAt } } } }",
   "comments(last:8) { nodes { author { login } createdAt } }",
 ].join("\n");
@@ -192,6 +192,9 @@ function classify(pr, me, requestedSet) {
 }
 
 function card(pr, verdict, extra) {
+  // CI rollup rides the last-commit lookup (single field, same batched query);
+  // search-API cards (inbox/merged) simply carry no ci.
+  const lastCommit = pr.commits && pr.commits.nodes && pr.commits.nodes[0] && pr.commits.nodes[0].commit;
   return {
     number: pr.number,
     title: pr.title,
@@ -203,6 +206,7 @@ function card(pr, verdict, extra) {
     when: extra && extra.when ? extra.when : "",
     whenTs: extra && extra.whenTs ? extra.whenTs : 0,
     mergeable: pr.mergeable,
+    ci: (lastCommit && lastCommit.statusCheckRollup && lastCommit.statusCheckRollup.state) || "",
   };
 }
 

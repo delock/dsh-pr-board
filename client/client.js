@@ -65,6 +65,10 @@
 #pr-board-overlay .pbo-meta{display:flex;gap:6px;align-items:center;margin-top:5px;opacity:.65;font-size:11px;flex-wrap:wrap}
 #pr-board-overlay .pbo-reason{padding:0 6px;border-radius:6px;font-size:11px;background:rgba(255,255,255,.1);color:#fff}
 #pr-board-overlay .pbo-badge-conflict{padding:0 6px;border-radius:6px;font-size:11px;background:rgba(239,68,68,.25);color:#fca5a5}
+#pr-board-overlay .pbo-badge-cifail{padding:0 6px;border-radius:6px;font-size:11px;background:rgba(239,68,68,.3);color:#f87171}
+#pr-board-overlay .pbo-badge-cirun{padding:0 6px;border-radius:6px;font-size:11px;background:rgba(251,191,36,.22);color:#fcd34d}
+#pr-board-overlay .pbo-badge-ciqueue{padding:0 6px;border-radius:6px;font-size:11px;background:rgba(148,163,184,.25);color:#cbd5e1}
+#pr-board-overlay .pbo-badge-cipass{padding:0 6px;border-radius:6px;font-size:11px;background:rgba(52,211,153,.2);color:#6ee7b7}
 #pr-board-overlay .pbo-badge-draft{padding:0 6px;border-radius:6px;font-size:11px;background:rgba(148,163,184,.25);color:#cbd5e1}
 #pr-board-overlay .pbo-claim{margin-top:6px;width:100%;padding:3px 0;border-radius:6px;border:1px solid rgba(255,255,255,.2);background:rgba(125,211,252,.15);color:#bae6fd;font-size:11px;font-weight:600;cursor:pointer}
 #pr-board-overlay .pbo-claim:hover{background:rgba(125,211,252,.3)}
@@ -489,6 +493,10 @@
     var meta = '<div class="pbo-meta"><span>@' + esc(c.author) + "</span>" +
       (c.when ? "<span>" + esc(timeAgo(c.when)) + "</span>" : "");
     if (colKey !== "merged" && c.reason && REASONS[c.reason]) meta += '<span class="pbo-reason">' + esc(REASONS[c.reason]) + '</span>';
+    if (c.ci === "FAILURE" || c.ci === "ERROR") meta += '<span class="pbo-badge-cifail">CI failing</span>';
+    else if (c.ci === "PENDING") meta += '<span class="pbo-badge-cirun">CI running</span>';
+    else if (c.ci === "EXPECTED") meta += '<span class="pbo-badge-ciqueue">CI queued</span>';
+    else if (c.ci === "SUCCESS") meta += '<span class="pbo-badge-cipass">CI ✓</span>';
     if (c.mergeable === "CONFLICTING") meta += '<span class="pbo-badge-conflict">conflict</span>';
     if (c.isDraft) meta += '<span class="pbo-badge-draft">draft</span>';
     meta += "</div>";
