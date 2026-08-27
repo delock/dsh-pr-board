@@ -272,28 +272,46 @@
 
   // Lookup order: binding table (exact, instant) → title search (works once
   // the first message has generated a title, also across browsers) → create.
+  // The whole flow is guarded: a synchronous throw anywhere used to kill the
+  // click listener and strand jumpBusy=true, which made every later card
+  // click a silent no-op — so failures now surface as toasts and the busy
+  // flag always clears (watchdog below).
   function openReviewSession(card) {
     if (jumpBusy) return;
     if (!CTX || !CTX.sessions) { window.open(card.url, "_blank"); return; }
     jumpBusy = true;
-    var key = sessionKey(card), tag = sessionTag(card);
-    var bound = boundSession(key);
-    if (bound) return finishJump(bound, card, false, tag);
-    CTX.sessions.search(tag).then(function (res) {
-      var items = (res && res.ok && res.value && res.value.items) || [];
-      var hit = null;
-      for (var i = 0; i < items.length; i++) {
-        var it = items[i];
-        var title = it.title || "";
-        if (title.indexOf(tag) >= 0) { hit = it; break; }
+    setTimeout(function () { if (jumpBusy) { jumpBusy = false; toast("PR board: jump timed out — click again"); } }, 15000);
+    try {
+      var key = sessionKey(card), tag = sessionTag(card);
+      var bound = boundSession(key);
+      if (bound) return finishJump(bound, card, false, tag);
+      if (typeof CTX.sessions.search !== "function") {
+        jumpBusy = false;
+        toast("PR board: ctx.sessions.search is unavailable on this host — opened GitHub. Details in the browser console.");
+        console.error("[pr-board] ctx.sessions keys:", CTX.sessions && Object.keys(CTX.sessions));
+        window.open(card.url, "_blank");
+        return;
       }
-      if (hit) {
-        var sid = hit.sessionId || hit.id;
-        bindSession(key, sid);
-        return finishJump(sid, card, false, tag);
-      }
-      createReviewSession(card, key, tag);
-    }, function (e) { jumpBusy = false; toast("Session search failed: " + errText(e)); window.open(card.url, "_blank"); });
+      CTX.sessions.search(tag).then(function (res) {
+        var items = (res && res.ok && res.value && res.value.items) || [];
+        var hit = null;
+        for (var i = 0; i < items.length; i++) {
+          var it = items[i];
+          var title = it.title || "";
+          if (title.indexOf(tag) >= 0) { hit = it; break; }
+        }
+        if (hit) {
+          var sid = hit.sessionId || hit.id;
+          bindSession(key, sid);
+          return finishJump(sid, card, false, tag);
+        }
+        createReviewSession(card, key, tag);
+      }, function (e) { jumpBusy = false; toast("Session search failed: " + errText(e)); window.open(card.url, "_blank"); });
+    } catch (e) {
+      jumpBusy = false;
+      console.error("[pr-board] openReviewSession failed:", e);
+      toast("PR board: click failed — " + errText(e) + " (details in console)");
+    }
   }
 
   function createReviewSession(card, key, tag) {
