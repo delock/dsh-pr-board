@@ -223,6 +223,14 @@
   // so ctx.sessions.search("repo#N") finds them on the next click.
   function sessionTag(card) { return shortName(card.repo || currentRepo()) + "#" + card.number; }
 
+  // Wire errors carry {code, message?, details?} — message is often absent,
+  // so fall through code/details before giving up with a generic string.
+  function errText(e) {
+    if (e && e.message) return String(e.message);
+    if (e && e.code) return e.code + (e.details ? " " + JSON.stringify(e.details).slice(0, 100) : "");
+    try { return JSON.stringify(e).slice(0, 140); } catch (x) { return "unknown error"; }
+  }
+
   function openReviewSession(card) {
     if (jumpBusy) return;
     if (!CTX || !CTX.sessions) { window.open(card.url, "_blank"); return; }
@@ -236,9 +244,9 @@
         var title = it.title || "";
         if (title.indexOf(tag) >= 0) { hit = it; break; }
       }
-      if (hit) return finishJump(hit.sessionId || hit.id, card, false);
+      if (hit) return finishJump(hit.sessionId || hit.id, card, false, tag);
       createReviewSession(card, tag);
-    }, function () { jumpBusy = false; window.open(card.url, "_blank"); });
+    }, function (e) { jumpBusy = false; toast("Session search failed: " + errText(e)); window.open(card.url, "_blank"); });
   }
 
   function createReviewSession(card, tag) {
@@ -248,35 +256,67 @@
       window.open(card.url, "_blank");
       return;
     }
-    CTX.sessions.create({ workspaceId: cfg.workspace }).then(function (res) {
-      if (!res || !res.ok) {
-        jumpBusy = false;
-        toast("Creating review session failed: " + ((res && res.error && res.error.message) || "unknown error") + " — opened GitHub.");
-        window.open(card.url, "_blank");
-        return;
-      }
-      var sid = res.value.sessionId;
-      // Best effort: title the new session so the next click finds it.
+    if (!CTX.workspaces || !CTX.workspaces.startSession) {
+      jumpBusy = false;
+      toast("Creating review session failed: workspaces service unavailable");
+      window.open(card.url, "_blank");
+      return;
+    }
+    // The official path (same as the sidebar New button): connectWorkspace
+    // reuses an existing blank session, coalesces concurrent creates and
+    // handles attach failures; it opens the session itself. Direct
+    // sessions.create is a lower-level primitive and fails on the
+    // blank-session-already-exists cases that connectWorkspace absorbs.
+    var before = null;
+    try { before = (CTX.sessions.list.getSnapshot() || {}).current; } catch (e) {}
+    try { CTX.workspaces.startSession(cfg.workspace); }
+    catch (e) {
+      jumpBusy = false;
+      toast("Creating review session failed: " + errText(e));
+      window.open(card.url, "_blank");
+      return;
+    }
+    // startSession is fire-and-forget: watch the sessions list until `current`
+    // moves to a NEW blank session, then title it so the next click finds it.
+    var done = false, tries = 0, unsub = null;
+    var stop = function () { if (unsub) { try { unsub(); } catch (e) {} unsub = null; } };
+    var check = function () {
+      if (done) return;
+      var snap = null;
+      try { snap = CTX.sessions.list.getSnapshot(); } catch (e) { return; }
+      var cur = snap && snap.current;
+      if (!cur || cur === before) return;
+      var summary = snap.byId && snap.byId[cur];
+      if (!summary || !summary.blank) return;
+      done = true;
+      stop();
+      finishJump(cur, card, true, tag);
       try {
-        var b = CTX.sessions.binding && CTX.sessions.binding(sid);
+        var b = CTX.sessions.binding && CTX.sessions.binding(cur);
         if (b && b.session && b.session.rename) {
           var rn = b.session.rename("review " + tag + " " + String(card.title || "").slice(0, 48));
           if (rn && rn.catch) rn.catch(function () {});
         }
       } catch (e) {}
-      finishJump(sid, card, true);
-    }, function (err) {
-      jumpBusy = false;
-      toast("Creating review session failed: " + (err && err.message ? err.message : err));
-    });
+    };
+    try { unsub = CTX.sessions.list.subscribe(check); } catch (e) {}
+    var timer = setInterval(function () {
+      if (done || ++tries > 40) {
+        clearInterval(timer);
+        stop();
+        if (!done) { jumpBusy = false; toast("Session opened but the review title could not be attached"); }
+        return;
+      }
+      check();
+    }, 250);
   }
 
-  function finishJump(sessionId, card, created) {
+  function finishJump(sessionId, card, created, tag) {
     try { CTX.sessions.open(sessionId); } catch (e) {}
     jumpBusy = false;
     var ov = document.getElementById("pr-board-overlay");
     if (ov) ov.classList.remove("pb-show");
-    toast((created ? "Started" : "Opened") + " review session for #" + card.number + (created ? " (" + sessionTag(card) + ")" : ""));
+    toast((created ? "Started" : "Opened") + " review session for #" + card.number + (created && tag ? " (" + tag + ")" : ""));
   }
 
   // ---------- sidebar widget ----------
