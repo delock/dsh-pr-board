@@ -85,8 +85,8 @@
 
   var CTX = null;
 
-  var CFG_KEY = "prboard.cfg", LAST_KEY = "prboard.last";
-  var DEFAULTS = { repos: [], user: "", workspace: "", interval: 5, sort: { waiting_me: "new", waiting_author: "new" } };
+  var CFG_KEY = "prboard.cfg", LAST_KEY = "prboard.last", BIND_KEY = "prboard.sessions";
+  var DEFAULTS = { repos: [], user: "", workspace: "", autoprompt: true, interval: 5, sort: { waiting_me: "new", waiting_author: "new" } };
   var COLS = [
     { key: "waiting_me", name: "Waiting on me", color: "#60a5fa" },
     { key: "waiting_author", name: "Waiting on author", color: "#fbbf24" },
@@ -119,9 +119,39 @@
     delete c.repo;
     if (!c.sort) c.sort = { waiting_me: "new", waiting_author: "new" };
     if (typeof c.workspace !== "string") c.workspace = "";
+    if (typeof c.autoprompt !== "boolean") c.autoprompt = true;
     return c;
   }
   function saveCfg() { try { localStorage.setItem(CFG_KEY, JSON.stringify(cfg)); } catch (e) {} }
+
+  // ---------- PR ↔ session bindings ----------
+  // Exact, immediate association ("owner/repo#N" -> sessionId). Session titles
+  // only materialize after the first message (LLM-generated), so titles alone
+  // can never match a freshly created review session — the binding table is
+  // the primary lookup, title search the cross-browser fallback.
+  function loadBindings() {
+    try { var b = JSON.parse(localStorage.getItem(BIND_KEY) || "{}"); return b && typeof b === "object" ? b : {}; }
+    catch (e) { return {}; }
+  }
+  function saveBindings(b) { try { localStorage.setItem(BIND_KEY, JSON.stringify(b)); } catch (e) {} }
+  function bindSession(key, sid) {
+    var b = loadBindings();
+    // One session belongs to at most one PR: if this session was previously
+    // bound to another PR (blank-session reuse), release the old claim.
+    for (var k in b) if (b[k] && b[k].sid === sid && k !== key) delete b[k];
+    b[key] = { sid: sid, t: Date.now() };
+    saveBindings(b);
+  }
+  function boundSession(key) {
+    var b = loadBindings();
+    var e = b[key];
+    if (!e || !e.sid) return null;
+    // Validate against the live list; a deleted/archived session re-binds.
+    var snap = null;
+    try { snap = CTX && CTX.sessions && CTX.sessions.list.getSnapshot(); } catch (x) {}
+    if (snap && snap.byId && !(e.sid in snap.byId)) { delete b[key]; saveBindings(b); return null; }
+    return e.sid;
+  }
 
   // "owner/name" -> "name" for display; falls back to the full id when two
   // monitored repos share a short name.
@@ -219,8 +249,9 @@
   }
 
   // ---------- click-to-session: find / open / create the review conversation ----------
-  // Title convention: created sessions are renamed to "review owner/repo#N …"
-  // so ctx.sessions.search("repo#N") finds them on the next click.
+  // Full key for the binding table; short tag ("repo#N") doubles as the title
+  // search needle — after the first message the LLM-generated title contains it.
+  function sessionKey(card) { return (card.repo || currentRepo()) + "#" + card.number; }
   function sessionTag(card) { return shortName(card.repo || currentRepo()) + "#" + card.number; }
 
   // Wire errors carry {code, message?, details?} — message is often absent,
@@ -231,11 +262,15 @@
     try { return JSON.stringify(e).slice(0, 140); } catch (x) { return "unknown error"; }
   }
 
+  // Lookup order: binding table (exact, instant) → title search (works once
+  // the first message has generated a title, also across browsers) → create.
   function openReviewSession(card) {
     if (jumpBusy) return;
     if (!CTX || !CTX.sessions) { window.open(card.url, "_blank"); return; }
     jumpBusy = true;
-    var tag = sessionTag(card);
+    var key = sessionKey(card), tag = sessionTag(card);
+    var bound = boundSession(key);
+    if (bound) return finishJump(bound, card, false, tag);
     CTX.sessions.search(tag).then(function (res) {
       var items = (res && res.ok && res.value && res.value.items) || [];
       var hit = null;
@@ -244,12 +279,16 @@
         var title = it.title || "";
         if (title.indexOf(tag) >= 0) { hit = it; break; }
       }
-      if (hit) return finishJump(hit.sessionId || hit.id, card, false, tag);
-      createReviewSession(card, tag);
+      if (hit) {
+        var sid = hit.sessionId || hit.id;
+        bindSession(key, sid);
+        return finishJump(sid, card, false, tag);
+      }
+      createReviewSession(card, key, tag);
     }, function (e) { jumpBusy = false; toast("Session search failed: " + errText(e)); window.open(card.url, "_blank"); });
   }
 
-  function createReviewSession(card, tag) {
+  function createReviewSession(card, key, tag) {
     if (!cfg.workspace) {
       jumpBusy = false;
       toast("No review workspace configured — opened GitHub instead. Set one in Settings.");
@@ -277,7 +316,7 @@
       return;
     }
     // startSession is fire-and-forget: watch the sessions list until `current`
-    // moves to a NEW blank session, then title it so the next click finds it.
+    // moves to a NEW blank session, then bind it and hand the agent its PR.
     var done = false, tries = 0, unsub = null;
     var stop = function () { if (unsub) { try { unsub(); } catch (e) {} unsub = null; } };
     var check = function () {
@@ -290,46 +329,62 @@
       if (!summary || !summary.blank) return;
       done = true;
       stop();
+      bindSession(key, cur);
       finishJump(cur, card, true, tag);
-      titleSession(cur, "review " + tag + " " + String(card.title || "").slice(0, 48), 8);
+      if (cfg.autoprompt !== false) {
+        sendReviewPrompt(cur, card, tag, 8);
+      } else {
+        toast("Session is blank and untitled until you send something — next click reuses it via the binding table");
+      }
     };
     try { unsub = CTX.sessions.list.subscribe(check); } catch (e) {}
     var timer = setInterval(function () {
       if (done || ++tries > 40) {
         clearInterval(timer);
         stop();
-        if (!done) { jumpBusy = false; toast("Session opened but the review title could not be attached"); }
+        if (!done) { jumpBusy = false; toast("Session opened but could not be identified for binding"); }
         return;
       }
       check();
     }, 250);
   }
 
-  // Rename a freshly opened review session, with retries: binding() may not be
-  // materialized the instant `current` moves, and rename() resolves with
-  // {ok:false,...} rather than throwing — both were silently swallowed before.
-  // Every terminal failure is toasted with its wire cause so it is diagnosable.
-  function titleSession(sid, title, attempts) {
+  // Send the first review prompt into the fresh session. This is what makes
+  // the whole flow work: the LLM title is generated from the first message
+  // (blank sessions cannot hold titles), and the agent receives its PR context
+  // without being told to go look for one. binding() may not be materialized
+  // the instant `current` moves, and prompt() resolves with {ok:false,...}
+  // rather than throwing — retry both, toast the wire cause on terminal failure.
+  function sendReviewPrompt(sid, card, tag, attempts) {
     var b = null;
     try { b = CTX.sessions.binding && CTX.sessions.binding(sid); } catch (e) {}
     var sess = b && b.session;
-    if (!sess || typeof sess.rename !== "function") {
-      if (attempts > 0) return setTimeout(function () { titleSession(sid, title, attempts - 1); }, 500);
-      toast("Review title not set: session object unavailable");
+    if (!sess || typeof sess.prompt !== "function") {
+      if (attempts > 0) return setTimeout(function () { sendReviewPrompt(sid, card, tag, attempts - 1); }, 500);
+      toast("Review prompt not sent: session object unavailable — paste the PR link yourself");
       return;
     }
-    var retry = function () { attempts > 0 ? titleSession(sid, title, attempts - 1) : toast("Review title not set: " + title.slice(0, 50)); };
+    var repo = card.repo || currentRepo();
+    var text =
+      "Review pull request " + repo + "#" + card.number +
+      (card.title ? ' ("' + String(card.title).slice(0, 80) + '")' : "") + ".\n" +
+      "URL: " + card.url + "\n" +
+      "Fetch the diff with `gh pr diff " + card.number + " --repo " + repo + "`, examine the changes, and give a maintainer's review " +
+      "(correctness, tests, risks, anything blocking). Do not post anything to GitHub without my explicit approval.";
     try {
-      var r = sess.rename(title);
+      var r = sess.prompt([{ type: "text", text: text }], "queue");
       if (r && typeof r.then === "function") r.then(function (res) {
-        if (res && res.ok) toast("Session titled: " + title.slice(0, 60));
-        else if (attempts > 0) setTimeout(function () { titleSession(sid, title, attempts - 1); }, 500);
-        else toast("Review title rejected: " + errText(res && res.error));
+        if (res && res.ok) toast("Review prompt sent — the agent is pulling " + tag);
+        else if (attempts > 0) setTimeout(function () { sendReviewPrompt(sid, card, tag, attempts - 1); }, 500);
+        else toast("Review prompt rejected: " + errText(res && res.error) + " — paste the PR link yourself");
       }, function (e) {
-        if (attempts > 0) setTimeout(function () { titleSession(sid, title, attempts - 1); }, 500);
-        else toast("Review title error: " + errText(e));
+        if (attempts > 0) setTimeout(function () { sendReviewPrompt(sid, card, tag, attempts - 1); }, 500);
+        else toast("Review prompt error: " + errText(e));
       });
-    } catch (e) { retry(); }
+    } catch (e) {
+      if (attempts > 0) setTimeout(function () { sendReviewPrompt(sid, card, tag, attempts - 1); }, 500);
+      else toast("Review prompt error: " + errText(e));
+    }
   }
 
   function finishJump(sessionId, card, created, tag) {
@@ -549,6 +604,19 @@
       if (!byId) toast("No workspace matched \"" + ws + "\" — review workspace cleared");
     }
     saveCfg();
+    var ap = prompt(
+      "Auto-send the review prompt when a new review session is created?\n" +
+      "y = the agent immediately gets the PR number/title/URL and fetches the diff itself\n" +
+      "n = blank session; you type your own instructions\n" +
+      "(the LLM session title derives from the first message, so 'y' also makes sessions searchable by PR number)\n" +
+      "Current: " + (cfg.autoprompt === false ? "n" : "y"),
+      cfg.autoprompt === false ? "n" : "y"
+    );
+    if (ap !== null) {
+      ap = ap.trim().toLowerCase();
+      cfg.autoprompt = !(ap === "n" || ap === "no" || ap === "0" || ap === "false");
+      saveCfg();
+    }
     restartPolling();
     refresh(true, true);
   }
