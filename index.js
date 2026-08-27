@@ -86,7 +86,7 @@ const DETAIL_FIELDS = [
   "number title url state isDraft",
   "author { login }",
   "createdAt updatedAt",
-  "reviewDecision mergeable isInMergeQueue mergeStateStatus autoMergeRequest { enabled }",
+  "reviewDecision mergeable isInMergeQueue mergeStateStatus autoMergeRequest { enabledAt }",
   "commits(last:1) { nodes { commit { committedDate } } }",
   "reviews(last:8) { nodes { author { login } state submittedAt comments(last:5) { nodes { author { login } createdAt } } } }",
   "comments(last:8) { nodes { author { login } createdAt } }",
@@ -163,8 +163,10 @@ function classify(pr, me, requestedSet) {
   // something human-fixable blocks it (failing checks = BLOCKED, out-of-date
   // branch = BEHIND, conflicts = DIRTY) the fix is the author's job; while the
   // requirements are merely pending (UNKNOWN) or already green (CLEAN) nobody
-  // has a move — the promise will complete itself.
-  if (pr.autoMergeRequest && pr.autoMergeRequest.enabled) {
+  // has a move — the promise will complete itself. NOTE: the boolean field was
+  // removed from the schema — on open PRs a non-null autoMergeRequest with an
+  // enabledAt timestamp IS the armed signal (verified by introspection).
+  if (pr.autoMergeRequest && pr.autoMergeRequest.enabledAt) {
     const blocked = pr.mergeStateStatus === "BLOCKED" || pr.mergeStateStatus === "BEHIND" || pr.mergeStateStatus === "DIRTY";
     return blocked
       ? { state: "waiting_author", reason: "auto-merge-blocked" }
