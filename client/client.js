@@ -59,7 +59,8 @@
 #pr-board-overlay .pbo-col-head i{width:8px;height:8px;border-radius:50%;flex:none}
 #pr-board-overlay .pbo-card{position:relative;padding:8px 10px;border-radius:8px;background:#1c2129;color:#d7dde5;font-size:12px;line-height:1.45;cursor:pointer;border:1px solid transparent;min-width:0}
 #pr-board-overlay .pbo-card:hover{border-color:rgba(255,255,255,.25);background:#232935}
-#pr-board-overlay .pbo-num{font-weight:700;color:#7aa7ff;margin-right:4px}
+#pr-board-overlay .pbo-num{font-weight:700;color:#7aa7ff;margin-right:4px;text-decoration:none;cursor:pointer}
+#pr-board-overlay .pbo-card:hover .pbo-num{text-decoration:underline}
 #pr-board-overlay .pbo-title-line{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;padding-right:16px}
 #pr-board-overlay .pbo-meta{display:flex;gap:6px;align-items:center;margin-top:5px;opacity:.65;font-size:11px;flex-wrap:wrap}
 #pr-board-overlay .pbo-reason{padding:0 6px;border-radius:6px;font-size:11px;background:rgba(255,255,255,.1);color:#fff}
@@ -380,8 +381,8 @@
     try {
       var r = sess.prompt([{ type: "text", text: text }], "queue");
       if (r && typeof r.then === "function") r.then(function (res) {
-        if (res && res.ok) toast("PR context sent — the agent will ask what to do with " + tag);
-        else if (attempts > 0) setTimeout(function () { sendReviewPrompt(sid, card, tag, attempts - 1); }, 500);
+        if (res && res.ok) return; // silent on success — the session itself is the feedback
+        if (attempts > 0) setTimeout(function () { sendReviewPrompt(sid, card, tag, attempts - 1); }, 500);
         else toast("Review prompt rejected: " + errText(res && res.error) + " — paste the PR link yourself");
       }, function (e) {
         if (attempts > 0) setTimeout(function () { sendReviewPrompt(sid, card, tag, attempts - 1); }, 500);
@@ -398,7 +399,6 @@
     jumpBusy = false;
     var ov = document.getElementById("pr-board-overlay");
     if (ov) ov.classList.remove("pb-show");
-    toast((created ? "Started" : "Opened") + " review session for #" + card.number + (created && tag ? " (" + tag + ")" : ""));
   }
 
   // ---------- sidebar widget ----------
@@ -491,9 +491,11 @@
     meta += "</div>";
     var claim = colKey === "inbox"
       ? '<button class="pbo-claim" data-claim="' + c.number + '">I&#39;ll review</button>' : "";
+    // Two click zones: the #number anchor goes to GitHub (middle-click and
+    // copy-link work natively), the rest of the card jumps into the session.
     return '<div class="pbo-card" data-num="' + c.number + '" data-url="' + esc(c.url) + '">' +
       '<button class="pbo-gh" data-gh="' + esc(c.url) + '" title="Open on GitHub">↗</button>' +
-      '<div class="pbo-title-line"><span class="pbo-num">#' + c.number + "</span>" + esc(c.title) + "</div>" + meta + claim + "</div>";
+      '<div class="pbo-title-line"><a class="pbo-num" data-gh="' + esc(c.url) + '" href="' + esc(c.url) + '" target="_blank" rel="noopener" title="Open #' + c.number + ' on GitHub">#' + c.number + "</a>" + esc(c.title) + "</div>" + meta + claim + "</div>";
   }
 
   function renderBoard() {
@@ -665,7 +667,7 @@
         return;
       }
       var ghEl = e.target.closest && e.target.closest("[data-gh]");
-      if (ghEl) { e.stopPropagation(); window.open(ghEl.getAttribute("data-gh"), "_blank"); return; }
+      if (ghEl) { e.stopPropagation(); e.preventDefault(); window.open(ghEl.getAttribute("data-gh"), "_blank"); return; }
       var rmEl = e.target.closest && e.target.closest("[data-remove]");
       if (rmEl) { e.stopPropagation(); removeRepo(rmEl.getAttribute("data-remove")); return; }
       var tabAddEl = e.target.closest && e.target.closest("[data-tab-add]");
