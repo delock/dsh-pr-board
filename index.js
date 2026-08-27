@@ -86,7 +86,7 @@ const DETAIL_FIELDS = [
   "number title url state isDraft",
   "author { login }",
   "createdAt updatedAt",
-  "reviewDecision mergeable isInMergeQueue",
+  "reviewDecision mergeable isInMergeQueue mergeStateStatus autoMergeRequest { enabled }",
   "commits(last:1) { nodes { commit { committedDate } } }",
   "reviews(last:8) { nodes { author { login } state submittedAt comments(last:5) { nodes { author { login } createdAt } } } }",
   "comments(last:8) { nodes { author { login } createdAt } }",
@@ -158,6 +158,18 @@ function classify(pr, me, requestedSet) {
   // reviews (reviewDecision can be null) and authors routinely rebase to get
   // in, so this check must come before the approval/staleness branches.
   if (pr.isInMergeQueue) return { state: "ready_merge", reason: "merge-queue" };
+
+  // Auto-merge: a standing promise to merge once requirements are met. When
+  // something human-fixable blocks it (failing checks = BLOCKED, out-of-date
+  // branch = BEHIND, conflicts = DIRTY) the fix is the author's job; while the
+  // requirements are merely pending (UNKNOWN) or already green (CLEAN) nobody
+  // has a move — the promise will complete itself.
+  if (pr.autoMergeRequest && pr.autoMergeRequest.enabled) {
+    const blocked = pr.mergeStateStatus === "BLOCKED" || pr.mergeStateStatus === "BEHIND" || pr.mergeStateStatus === "DIRTY";
+    return blocked
+      ? { state: "waiting_author", reason: "auto-merge-blocked" }
+      : { state: "ready_merge", reason: "auto-merge" };
+  }
 
   if (approved && !commitsAfterMyApproval) {
     if (pr.isDraft) return { state: "waiting_author", reason: "draft" };

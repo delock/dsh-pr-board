@@ -105,7 +105,9 @@
     "awaiting-author": "Awaiting author",
     "conflict": "Approved but conflicting",
     "draft": "Approved but draft",
-    "merge-queue": "In merge queue"
+    "merge-queue": "In merge queue",
+    "auto-merge": "Auto-merge armed",
+    "auto-merge-blocked": "Auto-merge blocked (failing checks / branch)"
   };
   var cfg = loadCfg(), pollTimer = null, data = null, busy = false, activeRepo = "";
   var currentCards = {}; // PR number -> card object (for the click-to-session flow)
