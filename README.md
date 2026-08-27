@@ -72,10 +72,15 @@ Then restart the web profile and refresh the page.
 3. **GitHub username** — set via **Settings**; leave blank to auto-use the
    `gh` login account (one identity across all repos).
 4. **Review workspace** — also in **Settings**. When set, clicking a PR card
-   jumps into the matching review conversation inside DSH: existing sessions
-   are found by title (`review repo#N …`) and reused; when none exists a new
-   session is created in the configured workspace and titled automatically.
-   With no workspace set (or via the per-card **↗** button) cards open GitHub.
+   jumps into the matching conversation inside DSH. Sessions are matched
+   through a local PR→session binding table first, then by title search
+   (`repo#N`, which works once a session's LLM-generated title exists); a
+   miss creates a new session in the configured workspace, binds it, and —
+   unless auto-prompt is off — sends it a first message naming the PR and
+   asking what you'd like to do (review the diff, check CI, draft a
+   comment, …). That first message is also what generates the session
+   title. With no workspace set (or via the per-card **↗** button) cards
+   open GitHub.
 5. Config is stored per-browser (localStorage).
 
 配置存在浏览器 localStorage（每个浏览器/设备设一次）；用户名留空则自动采用 host

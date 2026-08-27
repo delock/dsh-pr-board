@@ -365,16 +365,22 @@
       return;
     }
     var repo = card.repo || currentRepo();
+    // Context, not a workflow: the first message tells the agent WHICH PR this
+    // session is about and has it ask what to do — the user may want any of
+    // review / CI / file history / drafting a reply / merge. It also seeds the
+    // LLM session title (which derives from this message), keeping title
+    // search by "repo#N" working.
     var text =
-      "Review pull request " + repo + "#" + card.number +
-      (card.title ? ' ("' + String(card.title).slice(0, 80) + '")' : "") + ".\n" +
+      "This session is for working on pull request " + repo + "#" + card.number +
+      (card.title ? ' — "' + String(card.title).slice(0, 80) + '"' : "") + ".\n" +
       "URL: " + card.url + "\n" +
-      "Fetch the diff with `gh pr diff " + card.number + " --repo " + repo + "`, examine the changes, and give a maintainer's review " +
-      "(correctness, tests, risks, anything blocking). Do not post anything to GitHub without my explicit approval.";
+      "Don't start anything yet. First ask me what I'd like to do with this PR " +
+      "(e.g. review the diff, check CI status, inspect specific files, draft a comment, prepare the merge), " +
+      "then follow my direction. Never post anything to GitHub without my explicit approval.";
     try {
       var r = sess.prompt([{ type: "text", text: text }], "queue");
       if (r && typeof r.then === "function") r.then(function (res) {
-        if (res && res.ok) toast("Review prompt sent — the agent is pulling " + tag);
+        if (res && res.ok) toast("PR context sent — the agent will ask what to do with " + tag);
         else if (attempts > 0) setTimeout(function () { sendReviewPrompt(sid, card, tag, attempts - 1); }, 500);
         else toast("Review prompt rejected: " + errText(res && res.error) + " — paste the PR link yourself");
       }, function (e) {
@@ -605,8 +611,8 @@
     }
     saveCfg();
     var ap = prompt(
-      "Auto-send the review prompt when a new review session is created?\n" +
-      "y = the agent immediately gets the PR number/title/URL and fetches the diff itself\n" +
+      "Auto-send PR context when a new review session is created?\n" +
+      "y = the agent is told which PR this session is for (number/title/URL) and asks what you want to do\n" +
       "n = blank session; you type your own instructions\n" +
       "(the LLM session title derives from the first message, so 'y' also makes sessions searchable by PR number)\n" +
       "Current: " + (cfg.autoprompt === false ? "n" : "y"),
