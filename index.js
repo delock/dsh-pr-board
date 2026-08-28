@@ -485,7 +485,17 @@ function sanitizeCfg(c) {
   const autoprompt = c.autoprompt !== false;
   const days = Number(c.inactiveDays);
   const inactiveDays = Number.isFinite(days) ? Math.min(365, Math.max(0, Math.round(days))) : 30;
-  return { repos, user, workspace, autoprompt, inactiveDays };
+  // Per-repo review workspaces (repo -> workspaceId); the scalar `workspace`
+  // stays as the default for repos without their own.
+  const workspaces = {};
+  if (c.workspaces && typeof c.workspaces === "object" && !Array.isArray(c.workspaces)) {
+    for (const [repo, id] of Object.entries(c.workspaces)) {
+      if (typeof repo === "string" && /^[^/\s]+\/[^/\s]+$/.test(repo) && typeof id === "string" && id.length <= 120) {
+        workspaces[repo] = id;
+      }
+    }
+  }
+  return { repos, user, workspace, workspaces, autoprompt, inactiveDays };
 }
 
 async function readHostCfg() {

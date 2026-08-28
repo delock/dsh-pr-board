@@ -85,7 +85,9 @@ Then restart the web profile and refresh the page.
    when two monitored repos share a name.
 3. **GitHub username** — set via **Settings**; leave blank to auto-use the
    `gh` login account (one identity across all repos).
-4. **Review workspace** — also in **Settings**. When set, clicking a PR card
+4. **Review workspaces** — also in **Settings**, configured per repo (with a
+   default for repos without their own), so each repo's review conversations
+   open in its own workspace. When set, clicking a PR card
    jumps into the matching conversation inside DSH. Sessions are matched
    through a local PR→session binding table first, then by title search
    (`repo#N`, which works once a session's LLM-generated title exists); a

@@ -123,7 +123,7 @@
   var CTX = null;
 
   var CFG_KEY = "prboard.cfg", LAST_KEY = "prboard.last", BIND_KEY = "prboard.sessions";
-  var DEFAULTS = { repos: [], user: "", workspace: "", autoprompt: true, inactiveDays: 30, interval: 5, sort: { waiting_me: "new", waiting_author: "new" } };
+  var DEFAULTS = { repos: [], user: "", workspace: "", workspaces: {}, autoprompt: true, inactiveDays: 30, interval: 5, sort: { waiting_me: "new", waiting_author: "new" } };
   var COLS = [
     { key: "waiting_me", name: "Waiting on me", color: "#60a5fa" },
     { key: "waiting_author", name: "Waiting on author", color: "#fbbf24" },
@@ -174,6 +174,7 @@
     delete c.repo;
     if (!c.sort) c.sort = { waiting_me: "new", waiting_author: "new" };
     if (typeof c.workspace !== "string") c.workspace = "";
+    if (!c.workspaces || typeof c.workspaces !== "object" || Array.isArray(c.workspaces)) c.workspaces = {};
     if (typeof c.autoprompt !== "boolean") c.autoprompt = true;
     if (typeof c.inactiveDays !== "number" || !isFinite(c.inactiveDays) || c.inactiveDays < 0 || c.inactiveDays > 365) c.inactiveDays = 30;
     return c;
@@ -189,7 +190,7 @@
   // every device hitting this web UI shares them. The poll interval stays
   // per-browser. saveCfg pushes; pullCfg adopts host changes unless this
   // browser edited something in the last two minutes (anti ping-pong).
-  var SYNC_KEYS = ["repos", "user", "workspace", "autoprompt", "inactiveDays"];
+  var SYNC_KEYS = ["repos", "user", "workspace", "workspaces", "autoprompt", "inactiveDays"];
   var cfgDirtyAt = 0;
   var adopting = false;
 
@@ -432,10 +433,18 @@
     }
   }
 
+  // Where this repo's review sessions open: per-repo override, then the
+  // global default, then nowhere (cards open GitHub).
+  function workspaceFor(repo) {
+    return (cfg.workspaces && cfg.workspaces[repo]) || cfg.workspace || "";
+  }
+
   function createReviewSession(card, key, tag) {
-    if (!cfg.workspace) {
+    var repo = card.repo || currentRepo();
+    var wsId = workspaceFor(repo);
+    if (!wsId) {
       jumpBusy = false;
-      ghFallback("No review workspace configured. Set one in Settings");
+      ghFallback("No review workspace configured for " + repo + ". Set one in Settings");
       return;
     }
     if (!CTX.workspaces || !CTX.workspaces.startSession) {
@@ -450,7 +459,7 @@
     // blank-session-already-exists cases that connectWorkspace absorbs.
     var before = null;
     try { before = (CTX.sessions.list.getSnapshot() || {}).current; } catch (e) {}
-    try { CTX.workspaces.startSession(cfg.workspace); }
+    try { CTX.workspaces.startSession(wsId); }
     catch (e) {
       jumpBusy = false;
       ghFallback("Creating review session failed: " + errText(e));
@@ -783,27 +792,56 @@
     if (user === null) return;
     cfg.user = user.trim();
     saveCfg();
+    // Per-repo review workspaces: pick a target repo (or the default), then a
+    // workspace for it. Blank keeps current values.
     var opts = workspaceOptions();
-    var lines = opts.map(function (o) { return o.n + ") " + o.label; }).join("\n");
-    var cur = "";
-    for (var i = 0; i < opts.length; i++) if (opts[i].id === cfg.workspace) cur = String(opts[i].n);
-    var ws = prompt(
-      "Review workspace — where new PR review sessions open.\n" +
-      (opts.length ? lines : "(no workspaces found)") + "\n" +
-      "Enter a number (blank = disabled: card clicks open GitHub)" +
-      (cur ? "\nCurrent: " + cur : ""),
-      cur
+    var labelOf = function (id) {
+      if (!id) return "(default)";
+      for (var j = 0; j < opts.length; j++) if (opts[j].id === id) return opts[j].label;
+      return id;
+    };
+    var repoLines = cfg.repos.map(function (r, idx) {
+      return (idx + 1) + ") " + displayName(r) + " → " + labelOf(cfg.workspaces[r] || cfg.workspace);
+    }).join("\n");
+    var target = prompt(
+      "Review workspaces — where each repo's review sessions open:\n" +
+      (repoLines || "(no repos)") + "\n" +
+      "d) default for repos without their own → " + (cfg.workspace ? labelOf(cfg.workspace) : "(none — cards open GitHub)") + "\n" +
+      "Set which? (a repo number, or 'd'; blank = keep)",
+      ""
     );
-    if (ws === null) return;
-    ws = ws.trim();
-    if (!ws) { cfg.workspace = ""; }
-    else if (/^\d+$/.test(ws) && opts[Number(ws) - 1]) { cfg.workspace = opts[Number(ws) - 1].id; }
-    else {
-      var byId = opts.filter(function (o) { return o.id === ws || o.label === ws; })[0];
-      cfg.workspace = byId ? byId.id : "";
-      if (!byId) toast("No workspace matched \"" + ws + "\" — review workspace cleared");
+    if (target !== null && target.trim() !== "") {
+      target = target.trim().toLowerCase();
+      var isDefault = target === "d" || target === "default";
+      var repoIdx = /^\d+$/.test(target) ? Number(target) - 1 : -1;
+      if (isDefault || (repoIdx >= 0 && repoIdx < cfg.repos.length)) {
+        var targetName = isDefault ? "the default" : displayName(cfg.repos[repoIdx]);
+        var curId = isDefault ? cfg.workspace : (cfg.workspaces[cfg.repos[repoIdx]] || cfg.workspace);
+        var cur = "";
+        for (var k = 0; k < opts.length; k++) if (opts[k].id === curId) cur = String(opts[k].n);
+        var pick = prompt(
+          "Workspace for " + targetName + ":\n" +
+          (opts.length ? opts.map(function (o) { return o.n + ") " + o.label; }).join("\n") : "(no workspaces found)") + "\n" +
+          "Enter a number (blank = none: card clicks open GitHub)" +
+          (cur ? "\nCurrent: " + cur : ""),
+          cur
+        );
+        if (pick !== null) {
+          pick = pick.trim();
+          var id = "";
+          if (/^\d+$/.test(pick) && opts[Number(pick) - 1]) id = opts[Number(pick) - 1].id;
+          else {
+            var byId = opts.filter(function (o) { return o.id === pick || o.label === pick; })[0];
+            id = byId ? byId.id : "";
+            if (pick && !byId) toast("No workspace matched \"" + pick + "\" — cleared");
+          }
+          if (isDefault) cfg.workspace = id;
+          else if (id) cfg.workspaces[cfg.repos[repoIdx]] = id;
+          else delete cfg.workspaces[cfg.repos[repoIdx]];
+          saveCfg();
+        }
+      }
     }
-    saveCfg();
     var ap = prompt(
       "Auto-send PR context when a new review session is created?\n" +
       "y = the agent summarizes what recently happened on the PR (events, not code) and then asks what you want to do\n" +
