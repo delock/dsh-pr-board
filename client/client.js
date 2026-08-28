@@ -31,19 +31,20 @@
 #pr-board-widget .pbw-repo .pbw-chip.author{color:#fbbf24}
 #pr-board-widget .pbw-repo .pbw-chip.ready{color:#34d399}
 #pr-board-widget .pbw-repo .pbw-chip.inbox{color:#c4b5fd}
-/* Two-row repo block: name column + four number columns. The issue row's
-   numbers land in the same columns as the PR row's, so me/reporter sit
-   directly under their PR counterparts (columns 1fr + 4×minmax auto). */
-#pr-board-widget .pbw-rblock{display:grid;grid-template-columns:minmax(0,1fr) repeat(4,minmax(17px,auto));gap:2px 4px;padding:1px 0;border-radius:6px;align-items:center}
+/* Two-row repo block: name column | kind-label column (right-aligned, hugs
+   the numbers) | four number columns. The issue row's numbers land in the
+   same columns as the PR row's, so me/reporter sit directly under their PR
+   counterparts, and both kind labels share one right edge. */
+#pr-board-widget .pbw-rblock{display:grid;grid-template-columns:minmax(0,1fr) auto repeat(4,minmax(17px,auto));gap:2px 4px;padding:1px 0;border-radius:6px;align-items:center}
 #pr-board-widget .pbw-rblock:hover{background:color-mix(in srgb,currentColor 10%,transparent)}
 #pr-board-widget .pbw-rblock .pbw-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
+#pr-board-widget .pbw-rblock .pbw-kind{grid-column:2;justify-self:end;font-size:9px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;opacity:.55;white-space:nowrap}
+#pr-board-widget .pbw-rblock .pbw-kind.pbw-kind-iss{grid-row:2}
 #pr-board-widget .pbw-rblock .pbw-cell{display:inline-flex;justify-content:center;min-width:17px;padding:1px 4px;border-radius:8px;font-size:11px;font-weight:700;background:color-mix(in srgb,currentColor 10%,transparent)}
 #pr-board-widget .pbw-rblock .pbw-cell.me{color:#60a5fa}
 #pr-board-widget .pbw-rblock .pbw-cell.author{color:#fbbf24}
 #pr-board-widget .pbw-rblock .pbw-cell.ready{color:#34d399}
 #pr-board-widget .pbw-rblock .pbw-cell.inbox{color:#c4b5fd}
-#pr-board-widget .pbw-rblock .pbw-iss-label{font-size:9px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;opacity:.55;white-space:nowrap}
-#pr-board-widget .pbw-rblock .pbw-kind-tag{font-style:normal;font-size:9px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;opacity:.55;margin-left:4px}
 #pr-board-widget.pbw-pulse{animation:pbw-flash 1.2s 3}
 @keyframes pbw-flash{50%{background:color-mix(in srgb,#60a5fa 25%,transparent)}}
 #pr-board-overlay{position:fixed;inset:0;z-index:2147483000;display:none;background:color-mix(in srgb,#000000 62%,transparent);backdrop-filter:blur(3px)}
@@ -570,15 +571,17 @@
       }
       var c = rd.counts;
       var ic = rd.issueCounts || { waiting_me: 0, waiting_reporter: 0 };
-      // Two aligned rows in one grid: PR numbers on top, issue numbers in the
-      // same columns underneath (me under me, reporter under author).
+      // Two aligned rows in one grid: name | kind label (right-aligned against
+      // the numbers) | four number columns. Issue numbers share the PR columns,
+      // so me/reporter sit directly under their PR counterparts.
       html += '<div class="pbw-rblock" data-widget-repo="' + esc(repo) + '" title="' + esc(repo) + ' pull requests">' +
-        '<span class="pbw-name">' + esc(displayName(repo)) + '<i class="pbw-kind-tag">pr</i></span>' +
+        '<span class="pbw-name">' + esc(displayName(repo)) + "</span>" +
+        '<span class="pbw-kind" title="pull requests">pr</span>' +
         '<span class="pbw-cell me" title="PRs waiting on me">' + c.waiting_me + "</span>" +
         '<span class="pbw-cell author" title="PRs waiting on author">' + c.waiting_author + "</span>" +
         '<span class="pbw-cell ready" title="PRs ready to merge">' + c.ready_merge + "</span>" +
         '<span class="pbw-cell inbox" title="New PRs to triage">' + c.inbox + "</span>" +
-        '<span class="pbw-iss-label" data-widget-issues="' + esc(repo) + '" title="' + esc(repo) + ' issues">issue</span>' +
+        '<span class="pbw-kind pbw-kind-iss" data-widget-issues="' + esc(repo) + '" title="' + esc(repo) + ' issues">issue</span>' +
         '<span class="pbw-cell me" data-widget-issues="' + esc(repo) + '" title="Issues waiting on me">' + ic.waiting_me + "</span>" +
         '<span class="pbw-cell author" data-widget-issues="' + esc(repo) + '" title="Issues waiting on reporter">' + ic.waiting_reporter + "</span>" +
         "</div>";
