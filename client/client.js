@@ -50,7 +50,10 @@
 #pr-board-overlay select,#pr-board-overlay .pbo-btn{padding:4px 10px;border-radius:6px;border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.08);color:#fff;font-size:12px;cursor:pointer}
 #pr-board-overlay .pbo-btn:hover{background:rgba(255,255,255,.18)}
 #pr-board-overlay .pbo-body{flex:1;overflow:auto;display:grid;gap:10px;padding:12px 14px;grid-template-columns:repeat(5,minmax(230px,1fr));align-content:start;align-items:start}
-@media (max-width:1100px){#pr-board-overlay .pbo-body{grid-template-columns:repeat(2,minmax(230px,1fr))}}
+/* Responsive columns: 5 → 4 → 3 → 2 as width shrinks (min column 230px + gaps + padding). */
+@media (max-width:1270px){#pr-board-overlay .pbo-body{grid-template-columns:repeat(4,minmax(230px,1fr))}}
+@media (max-width:1030px){#pr-board-overlay .pbo-body{grid-template-columns:repeat(3,minmax(230px,1fr))}}
+@media (max-width:790px){#pr-board-overlay .pbo-body{grid-template-columns:repeat(2,minmax(230px,1fr))}}
 #pr-board-overlay .pbo-col{display:flex;flex-direction:column;gap:8px;min-width:0}
 #pr-board-overlay .pbo-col-head{display:flex;align-items:center;gap:6px;font-size:12px;font-weight:700;color:#fff;padding:2px 4px;flex:none}
 #pr-board-overlay .pbo-col-head .pbo-count{font-size:11px;opacity:.7;font-weight:600}
