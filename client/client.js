@@ -40,6 +40,12 @@
 #pr-board-widget .pbw-rblock .pbw-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
 #pr-board-widget .pbw-rblock .pbw-kind{grid-column:2;justify-self:end;font-size:9px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;opacity:.55;white-space:nowrap}
 #pr-board-widget .pbw-rblock .pbw-kind.pbw-kind-iss{grid-row:2}
+/* Issue numbers are EXPLICITLY placed: sparse auto-flow keeps its cursor at
+   the end of row 1, so after the explicitly placed label the two auto cells
+   would land in row 2 columns 1-2 (left of / under the label) — the exact
+   misplacement this fixes. */
+#pr-board-widget .pbw-rblock .pbw-ic1{grid-row:2;grid-column:3}
+#pr-board-widget .pbw-rblock .pbw-ic2{grid-row:2;grid-column:4}
 #pr-board-widget .pbw-rblock .pbw-cell{display:inline-flex;justify-content:center;min-width:17px;padding:1px 4px;border-radius:8px;font-size:11px;font-weight:700;background:color-mix(in srgb,currentColor 10%,transparent)}
 #pr-board-widget .pbw-rblock .pbw-cell.me{color:#60a5fa}
 #pr-board-widget .pbw-rblock .pbw-cell.author{color:#fbbf24}
@@ -586,8 +592,8 @@
         '<span class="pbw-cell ready" title="PRs ready to merge">' + c.ready_merge + "</span>" +
         '<span class="pbw-cell inbox" title="New PRs to triage">' + c.inbox + "</span>" +
         '<span class="pbw-kind pbw-kind-iss" data-widget-issues="' + esc(repo) + '" title="' + esc(repo) + ' issues">issue</span>' +
-        '<span class="pbw-cell me" data-widget-issues="' + esc(repo) + '" title="Issues waiting on me">' + ic.waiting_me + "</span>" +
-        '<span class="pbw-cell author" data-widget-issues="' + esc(repo) + '" title="Issues waiting on reporter">' + ic.waiting_reporter + "</span>" +
+        '<span class="pbw-cell me pbw-ic1" data-widget-issues="' + esc(repo) + '" title="Issues waiting on me">' + ic.waiting_me + "</span>" +
+        '<span class="pbw-cell author pbw-ic2" data-widget-issues="' + esc(repo) + '" title="Issues waiting on reporter">' + ic.waiting_reporter + "</span>" +
         "</div>";
     });
     row.innerHTML = html;
