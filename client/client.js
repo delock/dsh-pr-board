@@ -50,10 +50,13 @@
 #pr-board-overlay select,#pr-board-overlay .pbo-btn{padding:4px 10px;border-radius:6px;border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.08);color:#fff;font-size:12px;cursor:pointer}
 #pr-board-overlay .pbo-btn:hover{background:rgba(255,255,255,.18)}
 #pr-board-overlay .pbo-body{flex:1;overflow:auto;display:grid;gap:10px;padding:12px 14px;grid-template-columns:repeat(5,minmax(230px,1fr));align-content:start;align-items:start}
-/* Responsive columns: 5 → 4 → 3 → 2 as width shrinks (min column 230px + gaps + padding). */
-@media (max-width:1270px){#pr-board-overlay .pbo-body{grid-template-columns:repeat(4,minmax(230px,1fr))}}
-@media (max-width:1030px){#pr-board-overlay .pbo-body{grid-template-columns:repeat(3,minmax(230px,1fr))}}
-@media (max-width:790px){#pr-board-overlay .pbo-body{grid-template-columns:repeat(2,minmax(230px,1fr))}}
+/* Narrow widths: keep the five columns on ONE row at fixed width and pan
+   horizontally — one-finger swipe on touch, drag-to-pan (grab cursor) or
+   shift+wheel with a mouse. Columns never wrap below their usable width. */
+@media (max-width:1270px){
+  #pr-board-overlay .pbo-body{grid-template-columns:repeat(5,minmax(250px,320px));overflow-x:auto;cursor:grab}
+  #pr-board-overlay .pbo-body.pbw-panning{cursor:grabbing;user-select:none;-webkit-user-select:none}
+}
 #pr-board-overlay .pbo-col{display:flex;flex-direction:column;gap:8px;min-width:0}
 #pr-board-overlay .pbo-col-head{display:flex;align-items:center;gap:6px;font-size:12px;font-weight:700;color:#fff;padding:2px 4px;flex:none}
 #pr-board-overlay .pbo-col-head .pbo-count{font-size:11px;opacity:.7;font-weight:600}
@@ -759,6 +762,36 @@
     document.getElementById("pbo-close").onclick = function () { ov.classList.remove("pb-show"); };
     document.getElementById("pbo-refresh").onclick = function () { refresh(true, true); };
     document.getElementById("pbo-cfg").onclick = openSettings;
+
+    // Horizontal pan for the narrow single-row layout: touch pans natively via
+    // overflow-x, so this only handles mouse pointers — drag anywhere on the
+    // body (except form controls) to scroll sideways. A drag that moved more
+    // than a few px swallows the following click so releasing over a card
+    // doesn't trigger a session jump.
+    var panState = null, panMoved = false;
+    var bodyEl = document.getElementById("pbo-body");
+    var swallowClick = function (e) {
+      bodyEl.removeEventListener("click", swallowClick, true);
+      if (panMoved) { e.stopPropagation(); e.preventDefault(); }
+    };
+    bodyEl.addEventListener("pointerdown", function (e) {
+      bodyEl.removeEventListener("click", swallowClick, true);
+      panMoved = false;
+      if (e.pointerType === "touch") return;
+      if (e.target.closest && e.target.closest("button,a,select,input,textarea")) return;
+      panState = { x: e.clientX, left: bodyEl.scrollLeft };
+    });
+    document.addEventListener("pointermove", function (e) {
+      if (!panState) return;
+      var dx = e.clientX - panState.x;
+      if (!panMoved && Math.abs(dx) > 6) { panMoved = true; bodyEl.classList.add("pbw-panning"); }
+      if (panMoved) bodyEl.scrollLeft = panState.left - dx;
+    });
+    document.addEventListener("pointerup", function () {
+      if (panState && panMoved) bodyEl.addEventListener("click", swallowClick, true);
+      panState = null;
+      bodyEl.classList.remove("pbw-panning");
+    });
     document.getElementById("pbo-interval").onchange = function () {
       cfg.interval = parseInt(this.value, 10) || 5;
       saveCfg();
