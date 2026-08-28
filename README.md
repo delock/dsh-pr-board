@@ -32,6 +32,20 @@ Transition detection: when a PR crosses **author → you** (author responded, or
 re-requested your review), you get a toast and the sidebar widget pulses.
 Status-quo polling keeps the board fresh (interval configurable: 1–30 min).
 
+## Issue board / Issue 看板
+
+Each monitored repo gets a second sidebar row (indented, `iss` tag) with issue
+counters; clicking it opens a three-column **issue board**: **Waiting on me**
+(the reporter replied after your last comment, or you're assigned/mentioned
+with nothing from you yet), **Waiting on reporter** (you hold the last word),
+and **Recently closed** (closed within 14 days, regression watch). Third-party
+comments don't pull a thread back to you — only the reporter's do. Card clicks
+open or start a review conversation exactly like PR cards.
+
+每个监控仓库在侧边栏多一行缩进的 issue 计数（`iss` 标签），点开是三列 issue
+看板：等我行动 / 等报告者 / 最近关闭。只有报告者的回复会把线程拉回
+"等我"；第三方评论不会。点卡片同样进入/新建对应会话。
+
 状态迁移检测：当 PR 从"等作者"切到"等你"（作者回复 / 重新 request 你 review）时弹
 toast 提醒、侧边栏小部件闪烁；轮询间隔 1–30 分钟可配。
 

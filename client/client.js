@@ -31,6 +31,8 @@
 #pr-board-widget .pbw-repo .pbw-chip.author{color:#fbbf24}
 #pr-board-widget .pbw-repo .pbw-chip.ready{color:#34d399}
 #pr-board-widget .pbw-repo .pbw-chip.inbox{color:#c4b5fd}
+#pr-board-widget .pbw-iss{padding-left:10px}
+#pr-board-widget .pbw-iss .pbw-iss-tag{flex:none;font-size:9px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;opacity:.55;margin-right:2px}
 #pr-board-widget.pbw-pulse{animation:pbw-flash 1.2s 3}
 @keyframes pbw-flash{50%{background:color-mix(in srgb,#60a5fa 25%,transparent)}}
 #pr-board-overlay{position:fixed;inset:0;z-index:2147483000;display:none;background:color-mix(in srgb,#000000 62%,transparent);backdrop-filter:blur(3px)}
@@ -119,8 +121,21 @@
     "auto-merge": "Auto-merge armed",
     "auto-merge-blocked": "Auto-merge blocked (failing checks / branch)"
   };
+  // Issue board: support-queue vocabulary (three columns, no merge machinery).
+  var ISS_COLS = [
+    { key: "waiting_me", name: "Waiting on me", color: "#60a5fa" },
+    { key: "waiting_reporter", name: "Waiting on reporter", color: "#fbbf24" },
+    { key: "closed_recent", name: "Recently closed", color: "#94a3b8" }
+  ];
+  var ISS_REASONS = {
+    "assigned": "Assigned to me",
+    "mentioned": "Mentioned me",
+    "replied": "Reporter replied",
+    "awaiting-reporter": "Awaiting reporter"
+  };
   var cfg = loadCfg(), pollTimer = null, data = null, busy = false, activeRepo = "";
-  var currentCards = {}; // PR number -> card object (for the click-to-session flow)
+  var boardMode = "pr"; // "pr" | "issue" — which panel the board shows
+  var currentCards = {}; // number -> card object (for the click-to-session flow)
   var jumpBusy = false;
 
   function loadCfg() {
@@ -398,31 +413,42 @@
     }
     var repo = card.repo || currentRepo();
     // Context + memory restore, not a workflow: the first message tells the
-    // agent WHICH PR this session is about, hands it the board's own snapshot
-    // (state / reason / CI / flags) as a starting point, and asks it to
-    // summarize what has recently HAPPENED on the PR (events and standing,
-    // never a walkthrough of the code) before asking what to do. It also seeds
-    // the LLM session title (which derives from this message), keeping title
-    // search by "repo#N" working.
+    // agent WHICH item this session is about (PR or issue), hands it the
+    // board's own snapshot as a starting point, and asks it to summarize what
+    // has recently HAPPENED (events and standing, never a code walkthrough)
+    // before asking what to do. It also seeds the LLM session title, keeping
+    // title search by "repo#N" working.
+    var isIssue = card.kind === "issue";
     var facts = [];
-    var stateNames = { waiting_me: "waiting on me", waiting_author: "waiting on author", ready_merge: "ready to merge", inbox: "untriaged" };
-    var fact = (stateNames[card.state] || card.state) + (REASONS[card.reason] ? " — " + REASONS[card.reason] : "");
+    var stateNames = isIssue
+      ? { waiting_me: "waiting on me", waiting_reporter: "waiting on reporter" }
+      : { waiting_me: "waiting on me", waiting_author: "waiting on author", ready_merge: "ready to merge", inbox: "untriaged" };
+    var reasonMap = isIssue ? ISS_REASONS : REASONS;
+    var fact = (stateNames[card.state] || card.state) + (reasonMap[card.reason] ? " — " + reasonMap[card.reason] : "");
     facts.push(fact);
-    if (card.ci === "FAILURE" || card.ci === "ERROR") facts.push("CI failing");
-    else if (card.ci === "PENDING") facts.push("CI running");
-    else if (card.ci === "SUCCESS") facts.push("CI green");
-    if (card.mergeable === "CONFLICTING") facts.push("has conflicts");
-    if (card.isDraft) facts.push("draft");
+    if (!isIssue) {
+      if (card.ci === "FAILURE" || card.ci === "ERROR") facts.push("CI failing");
+      else if (card.ci === "PENDING") facts.push("CI running");
+      else if (card.ci === "SUCCESS") facts.push("CI green");
+      if (card.mergeable === "CONFLICTING") facts.push("has conflicts");
+      if (card.isDraft) facts.push("draft");
+    }
+    var kindWord = isIssue ? "issue" : "pull request";
     var text =
-      "This session is for working on pull request " + repo + "#" + card.number +
+      "This session is for working on " + kindWord + " " + repo + "#" + card.number +
       (card.title ? ' — "' + String(card.title).slice(0, 80) + '"' : "") +
       (card.author ? " by @" + card.author : "") + ".\n" +
       "URL: " + card.url + "\n" +
-      "My PR board currently says: " + facts.join("; ") + ".\n\n" +
-      "First, refresh that into an accurate picture: use gh (e.g. `gh pr view " + card.number + " --repo " + repo + " --json state,reviewDecision,statusCheckRollup` " +
-      "and the PR timeline / recent reviews and comments via `gh api`) to pull what has recently happened, " +
-      "then give me a brief summary of the EVENTS and current standing — who reviewed/commented/pushed what and when, CI and merge status. " +
-      "Do NOT explain or walk through the code; this is context restoration, not review.\n" +
+      "My board currently says: " + facts.join("; ") + ".\n\n" +
+      (isIssue
+        ? "First, refresh that into an accurate picture: use gh (e.g. `gh issue view " + card.number + " --repo " + repo + "` " +
+          "and the issue comments / timeline via `gh api`) to pull what has recently happened, " +
+          "then give me a brief summary of the EVENTS and current standing — who commented what and when, labels, open/closed state. " +
+          "Do NOT explain the code; this is context restoration.\n"
+        : "First, refresh that into an accurate picture: use gh (e.g. `gh pr view " + card.number + " --repo " + repo + " --json state,reviewDecision,statusCheckRollup` " +
+          "and the PR timeline / recent reviews and comments via `gh api`) to pull what has recently happened, " +
+          "then give me a brief summary of the EVENTS and current standing — who reviewed/commented/pushed what and when, CI and merge status. " +
+          "Do NOT explain or walk through the code; this is context restoration, not review.\n") +
       "After the summary, ask me what I'd like to do next and follow my direction. " +
       "Never post anything to GitHub without my explicit approval.";
     try {
@@ -475,12 +501,15 @@
       '<div class="pbw-list" id="pbw-row"><span class="pbw-chip" style="opacity:.6">Loading…</span></div>';
   }
 
-  // Shared widget click handling: + adds a repo, a repo row opens its board
+  // Shared widget click handling: + adds a repo, the PR row opens the PR
+  // board for that repo, the indented issue row opens its issue board.
   function widgetClick(e) {
     var addEl = e.target.closest && e.target.closest("#pbw-add");
     if (addEl) { e.stopPropagation(); addRepo(); return; }
+    var issEl = e.target.closest && e.target.closest("[data-widget-issues]");
+    if (issEl) { openBoard(issEl.getAttribute("data-widget-issues"), "issue"); return; }
     var repoEl = e.target.closest && e.target.closest("[data-widget-repo]");
-    if (repoEl) { openBoard(repoEl.getAttribute("data-widget-repo")); return; }
+    if (repoEl) { openBoard(repoEl.getAttribute("data-widget-repo"), "pr"); return; }
     openBoard();
   }
 
@@ -519,26 +548,35 @@
         return;
       }
       var c = rd.counts;
-      html += '<div class="pbw-repo" data-widget-repo="' + esc(repo) + '" title="' + esc(repo) + '"><span class="pbw-name">' +
+      html += '<div class="pbw-repo" data-widget-repo="' + esc(repo) + '" title="' + esc(repo) + ' pull requests"><span class="pbw-name">' +
         esc(displayName(repo)) + '</span><span class="pbw-chip me" title="Waiting on me">' + c.waiting_me +
         '</span><span class="pbw-chip author" title="Waiting on author">' + c.waiting_author +
         '</span><span class="pbw-chip ready" title="Ready to merge">' + c.ready_merge +
         '</span><span class="pbw-chip inbox" title="Inbox: new PRs to triage">' + c.inbox + "</span></div>";
+      // Second row per repo: issues — click opens the issue board.
+      var ic = rd.issueCounts || { waiting_me: 0, waiting_reporter: 0 };
+      html += '<div class="pbw-repo pbw-iss" data-widget-issues="' + esc(repo) + '" title="' + esc(repo) + ' issues">' +
+        '<span class="pbw-iss-tag">iss</span>' +
+        '<span class="pbw-chip me" title="Issues waiting on me">' + ic.waiting_me +
+        '</span><span class="pbw-chip author" title="Issues waiting on reporter">' + ic.waiting_reporter + "</span></div>";
     });
     row.innerHTML = html;
   }
 
   // ---------- board ----------
   function cardHtml(c, colKey) {
+    var reasons = c.kind === "issue" ? ISS_REASONS : REASONS;
     var meta = '<div class="pbo-meta"><span>@' + esc(c.author) + "</span>" +
       (c.when ? "<span>" + esc(timeAgo(c.when)) + "</span>" : "");
-    if (colKey !== "merged" && c.reason && REASONS[c.reason]) meta += '<span class="pbo-reason">' + esc(REASONS[c.reason]) + '</span>';
-    if (c.ci === "FAILURE" || c.ci === "ERROR") meta += '<span class="pbo-badge-cifail">CI failing</span>';
-    else if (c.ci === "PENDING") meta += '<span class="pbo-badge-cirun">CI running</span>';
-    else if (c.ci === "EXPECTED") meta += '<span class="pbo-badge-ciqueue">CI queued</span>';
-    else if (c.ci === "SUCCESS") meta += '<span class="pbo-badge-cipass">CI ✓</span>';
-    if (c.mergeable === "CONFLICTING") meta += '<span class="pbo-badge-conflict">conflict</span>';
-    if (c.isDraft) meta += '<span class="pbo-badge-draft">draft</span>';
+    if (colKey !== "merged" && colKey !== "closed_recent" && c.reason && reasons[c.reason]) meta += '<span class="pbo-reason">' + esc(reasons[c.reason]) + '</span>';
+    if (c.kind !== "issue") {
+      if (c.ci === "FAILURE" || c.ci === "ERROR") meta += '<span class="pbo-badge-cifail">CI failing</span>';
+      else if (c.ci === "PENDING") meta += '<span class="pbo-badge-cirun">CI running</span>';
+      else if (c.ci === "EXPECTED") meta += '<span class="pbo-badge-ciqueue">CI queued</span>';
+      else if (c.ci === "SUCCESS") meta += '<span class="pbo-badge-cipass">CI ✓</span>';
+      if (c.mergeable === "CONFLICTING") meta += '<span class="pbo-badge-conflict">conflict</span>';
+      if (c.isDraft) meta += '<span class="pbo-badge-draft">draft</span>';
+    }
     meta += "</div>";
     var claim = colKey === "inbox"
       ? '<button class="pbo-claim" data-claim="' + c.number + '">I&#39;ll review</button>' : "";
@@ -570,16 +608,21 @@
     if (!data.ok) { body.innerHTML = '<div class="pbo-error">' + esc(data.error || "load failed") + "</div>"; return; }
     var repo = currentRepo();
     var rd = repoData(repo);
+    var issueMode = boardMode === "issue";
+    var colsDef = issueMode ? ISS_COLS : COLS;
+    var columnsSrc = issueMode ? (rd && rd.issueColumns) : (rd && rd.columns);
+    var modeBtn = document.getElementById("pbo-mode");
+    if (modeBtn) modeBtn.textContent = issueMode ? "→ Pull requests" : "→ Issues";
     var sub = document.getElementById("pbo-sub");
-    if (sub) sub.textContent = repo + " · @" + data.user + " · updated " + timeAgo(data.generatedAt);
+    if (sub) sub.textContent = repo + (issueMode ? " · issues" : " · pull requests") + " · @" + data.user + " · updated " + timeAgo(data.generatedAt);
     if (!rd) { body.innerHTML = '<div class="pbo-loading">Loading…</div>'; return; }
     if (!rd.ok) { body.innerHTML = '<div class="pbo-error">' + esc(repo) + ": " + esc(rd.error || "load failed") + "</div>"; return; }
     var html = "";
-    COLS.forEach(function (col) {
-      var list = (rd.columns && rd.columns[col.key]) || [];
-      list.forEach(function (c) { c.repo = repo; currentCards[c.number] = c; });
+    colsDef.forEach(function (col) {
+      var list = (columnsSrc && columnsSrc[col.key]) || [];
+      list.forEach(function (c) { c.repo = repo; c.kind = issueMode ? "issue" : "pr"; currentCards[c.number] = c; });
       // First two columns support client-side sort toggling (new→old / old→new); others stay new→old
-      var sortable = col.key === "waiting_me" || col.key === "waiting_author";
+      var sortable = col.key === "waiting_me" || col.key === "waiting_author" || col.key === "waiting_reporter";
       var dir = (cfg.sort && cfg.sort[col.key]) || "new";
       if (sortable) {
         list = list.slice().sort(function (a, b) {
@@ -680,10 +723,11 @@
     refresh(true, true);
   }
 
-  function openBoard(repo) {
+  function openBoard(repo, mode) {
     var ov = ensureBoard();
     ov.classList.add("pb-show");
     if (repo && cfg.repos.indexOf(repo) >= 0) activeRepo = repo;
+    if (mode === "issue" || mode === "pr") boardMode = mode;
     if (!cfg.repos.length) { addRepo(); return; } // first run: guide straight into setup
     refresh(false, true);
   }
@@ -696,6 +740,7 @@
     ov.innerHTML =
       '<div class="pbo-head"><span class="pbo-title">PR Board</span>' +
       '<span class="pbo-sub" id="pbo-sub"></span><span class="pbo-spacer"></span>' +
+      '<button class="pbo-btn" id="pbo-mode" title="Switch between the pull-request and issue boards">→ Issues</button>' +
       '<select id="pbo-interval">' +
       [1, 2, 5, 10, 30].map(function (m) {
         return '<option value="' + m + '"' + (m === cfg.interval ? " selected" : "") + ">" + m + " min poll</option>";
@@ -762,6 +807,10 @@
     document.getElementById("pbo-close").onclick = function () { ov.classList.remove("pb-show"); };
     document.getElementById("pbo-refresh").onclick = function () { refresh(true, true); };
     document.getElementById("pbo-cfg").onclick = openSettings;
+    document.getElementById("pbo-mode").onclick = function () {
+      boardMode = boardMode === "issue" ? "pr" : "issue";
+      renderBoard();
+    };
 
     // Horizontal pan for the narrow single-row layout: touch pans natively via
     // overflow-x, so this only handles mouse pointers — drag anywhere on the
