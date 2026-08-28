@@ -60,12 +60,32 @@ async function ghSearch(repo, qualifiers, extraArgs) {
   }
 }
 
+// Issue search: `gh search issues` also returns PRs unless `is:issue` pins it.
+async function ghSearchIssues(repo, qualifiers, extraArgs) {
+  const args = ["search", "issues", "--repo", repo, "is:issue", ...qualifiers, ...extraArgs, "--json", SEARCH_FIELDS];
+  const r = await gh(args);
+  if (!r.ok) throw new Error(ghError(r));
+  try {
+    return JSON.parse(r.stdout);
+  } catch (e) {
+    throw new Error("failed to parse gh search output");
+  }
+}
+
 // GraphQL batch fetch per-PR decision details (aliased chunks of up to 25)
 async function ghDetails(owner, name, numbers) {
+  return ghAliasedDetails(owner, name, numbers, "pullRequest", DETAIL_FIELDS);
+}
+
+async function ghIssueDetails(owner, name, numbers) {
+  return ghAliasedDetails(owner, name, numbers, "issue", ISSUE_FIELDS);
+}
+
+async function ghAliasedDetails(owner, name, numbers, field, fields) {
   const out = [];
   for (let i = 0; i < numbers.length; i += 25) {
     const chunk = numbers.slice(i, i + 25);
-    const alias = chunk.map((n, j) => `p${j}: pullRequest(number:${n}){` + DETAIL_FIELDS + "}").join("\n");
+    const alias = chunk.map((n, j) => `p${j}: ${field}(number:${n}){` + fields + "}").join("\n");
     const query = "query($o:String!,$n:String!){repository(owner:$o,name:$n){" + alias + "}}";
     const r = await gh(["api", "graphql", "-f", `query=${query}`, "-F", `o=${owner}`, "-F", `n=${name}`], 60000);
     if (!r.ok) throw new Error("graphql failed: " + ghError(r));
@@ -90,6 +110,14 @@ const DETAIL_FIELDS = [
   "commits(last:1) { nodes { commit { committedDate statusCheckRollup { state } } } }",
   "reviews(last:8) { nodes { author { login } state submittedAt comments(last:5) { nodes { author { login } createdAt } } } }",
   "comments(last:8) { nodes { author { login } createdAt } }",
+].join("\n");
+
+const ISSUE_FIELDS = [
+  "number title url state",
+  "author { login }",
+  "createdAt updatedAt",
+  "assignees(first:10) { nodes { login } }",
+  "comments(last:10) { nodes { author { login } createdAt } }",
 ].join("\n");
 
 // ---------------------------------------------------------------- host: state machine
@@ -191,6 +219,28 @@ function classify(pr, me, requestedSet) {
   return "other";
 }
 
+// Support-queue state machine for issues: no review machinery, the turnstile
+// is the comment timeline. Only the REPORTER's replies pull the thread back to
+// "waiting on me" — third-party comments don't (they may be answering, not
+// asking me); assigned/mentioned threads with no word from me yet are mine.
+function classifyIssue(d, me, assignedSet, mentionedSet) {
+  const comments = (d.comments && d.comments.nodes) || [];
+  let myLast = 0, reporterLast = 0;
+  for (const c of comments) {
+    const who = c.author && c.author.login;
+    const t = ts(c.createdAt);
+    if (who === me) myLast = Math.max(myLast, t);
+    else if (who === ((d.author && d.author.login) || "") && !isBot(who)) reporterLast = Math.max(reporterLast, t);
+  }
+  const assigned = assignedSet.has(d.number);
+  const mentioned = mentionedSet.has(d.number);
+  if (reporterLast > myLast) return { state: "waiting_me", reason: "replied", whenTs: reporterLast };
+  if (myLast > 0) return { state: "waiting_reporter", reason: "awaiting-reporter", whenTs: myLast };
+  if (assigned) return { state: "waiting_me", reason: "assigned", whenTs: ts(d.createdAt) };
+  if (mentioned) return { state: "waiting_me", reason: "mentioned", whenTs: ts(d.createdAt) };
+  return "other"; // commented-only thread with nothing new — not shown
+}
+
 function card(pr, verdict, extra) {
   // CI rollup rides the last-commit lookup (single field, same batched query);
   // search-API cards (inbox/merged) simply carry no ci.
@@ -222,12 +272,16 @@ async function collect(repo, me) {
   const open = ["--state", "open"];
 
   // Four pools: review-requested / reviewed-by / commented (open) / recent involvement (incl. merged)
-  const [requested, reviewed, commented, recent, newest] = await Promise.all([
+  const [requested, reviewed, commented, recent, newest, issAssigned, issMentioned, issCommented, issRecent] = await Promise.all([
     ghSearch(repo, [`review-requested:${me}`], [...open, "--limit", "50"]),
     ghSearch(repo, [`reviewed-by:${me}`], [...open, "--limit", "50"]),
     ghSearch(repo, [`commenter:${me}`], [...open, "--limit", "50"]),
     ghSearch(repo, [`reviewed-by:${me}`], ["--sort", "updated", "--limit", "30"]),
     ghSearch(repo, [], [...open, "--sort", "created", "--limit", "40"]),
+    ghSearchIssues(repo, [`assignee:${me}`], [...open, "--limit", "50"]),
+    ghSearchIssues(repo, [`mentions:${me}`], [...open, "--limit", "50"]),
+    ghSearchIssues(repo, [`commenter:${me}`], [...open, "--limit", "50"]),
+    ghSearchIssues(repo, [`involves:${me}`], ["--sort", "updated", "--limit", "30"]),
   ]);
 
   const requestedSet = new Set(requested.map((p) => p.number));
@@ -274,6 +328,36 @@ async function collect(repo, me) {
   cols.ready_merge.sort((a, b) => b.whenTs - a.whenTs);
   cols.inbox.sort((a, b) => b.whenTs - a.whenTs);
 
+  // ---------------- issues: support-queue view ----------------
+  const assignedSet = new Set(issAssigned.map((i) => i.number));
+  const mentionedSet = new Set(issMentioned.map((i) => i.number));
+  const issueMap = new Map();
+  for (const i of [...issAssigned, ...issMentioned, ...issCommented]) issueMap.set(i.number, i);
+
+  const issueCols = { waiting_me: [], waiting_reporter: [], closed_recent: [] };
+  const issueNumbers = [...issueMap.keys()];
+  const issueDetails = issueNumbers.length ? await ghIssueDetails(owner, name, issueNumbers) : [];
+  const issueDetailMap = new Map(issueDetails.map((d) => [d.number, d]));
+  for (const num of issueNumbers) {
+    const d = issueDetailMap.get(num);
+    if (!d || d.state !== "OPEN") continue;
+    const verdict = classifyIssue(d, me, assignedSet, mentionedSet);
+    if (typeof verdict === "string") continue;
+    const when = verdict.whenTs ? new Date(verdict.whenTs).toISOString() : "";
+    issueCols[verdict.state].push(card(d, { state: verdict.state, reason: verdict.reason }, { when, whenTs: verdict.whenTs || 0 }));
+  }
+  // recently closed issues I was involved in (regression watch), newest first
+  const CLOSED_WINDOW_MS = 14 * 86400 * 1000;
+  const closedRecent = issRecent
+    .filter((i) => i.state === "CLOSED" && Date.now() - ts(i.closedAt) < CLOSED_WINDOW_MS)
+    .sort((a, b) => ts(b.closedAt) - ts(a.closedAt))
+    .slice(0, 8)
+    .map((i) => card(i, { state: "closed_recent", reason: "" }, { when: i.closedAt, whenTs: ts(i.closedAt) }));
+  issueCols.closed_recent = closedRecent;
+
+  issueCols.waiting_me.sort((a, b) => b.whenTs - a.whenTs);
+  issueCols.waiting_reporter.sort((a, b) => b.whenTs - a.whenTs);
+
   return {
     ok: true,
     repo,
@@ -287,6 +371,12 @@ async function collect(repo, me) {
       inbox: cols.inbox.length,
     },
     columns: { ...cols, merged },
+    issueCounts: {
+      waiting_me: issueCols.waiting_me.length,
+      waiting_reporter: issueCols.waiting_reporter.length,
+      closed_recent: issueCols.closed_recent.length,
+    },
+    issueColumns: issueCols,
   };
 }
 
@@ -307,7 +397,7 @@ async function boardDataMulti(repos, me, fresh) {
       try {
         const d = await boardData(repo, me, fresh);
         if (!d.ok) return { repo, ok: false, error: d.error };
-        return { repo, ok: true, counts: d.counts, columns: d.columns };
+        return { repo, ok: true, counts: d.counts, columns: d.columns, issueCounts: d.issueCounts, issueColumns: d.issueColumns };
       } catch (e) {
         return { repo, ok: false, error: String((e && e.message) || e) };
       }
