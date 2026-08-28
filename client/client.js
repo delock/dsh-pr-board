@@ -179,6 +179,7 @@
     // meant to each carry an explicit workspace; unset ones open GitHub.
     if (typeof c.workspace === "string" && c.workspace) {
       c.repos.forEach(function (r) { if (!c.workspaces[r]) c.workspaces[r] = c.workspace; });
+      wsMigrated = true; // pullCfg must PUSH this, not adopt a stale empty host map over it
     }
     delete c.workspace;
     if (typeof c.autoprompt !== "boolean") c.autoprompt = true;
@@ -199,6 +200,7 @@
   var SYNC_KEYS = ["repos", "user", "workspaces", "autoprompt", "inactiveDays"];
   var cfgDirtyAt = 0;
   var adopting = false;
+  var wsMigrated = false; // set by loadCfg when the scalar default was just seeded into the map
 
   function syncedCfg() {
     var out = {};
@@ -226,6 +228,13 @@
       var remote = v.config;
       var same = SYNC_KEYS.every(function (k) { return JSON.stringify(cfg[k]) === JSON.stringify(remote[k]); });
       if (same) return cb && cb();
+      // A just-migrated local map outranks a host that never received it:
+      // PUSH the seed instead of adopting an empty/stale map over it.
+      if (wsMigrated) {
+        wsMigrated = false;
+        pushCfg();
+        return cb && cb();
+      }
       if (Date.now() - cfgDirtyAt < 120000) return cb && cb(); // local edit wins, for now
       adopting = true;
       SYNC_KEYS.forEach(function (k) { cfg[k] = remote[k]; });
@@ -479,7 +488,13 @@
   // Where this repo's review sessions open: an explicit per-repo workspace,
   // or nowhere (cards open GitHub). There is deliberately no global default.
   function workspaceFor(repo) {
-    return (cfg.workspaces && cfg.workspaces[repo]) || "";
+    var m = cfg.workspaces || {};
+    if (m[repo]) return m[repo];
+    // GitHub is case-insensitive but config keys are not: a repo entered as
+    // "deepspeed" on one device and "DeepSpeed" on another must still resolve.
+    var lower = String(repo).toLowerCase();
+    for (var k in m) if (Object.prototype.hasOwnProperty.call(m, k) && k.toLowerCase() === lower) return m[k];
+    return "";
   }
 
   function createReviewSession(card, key, tag) {
