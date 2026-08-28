@@ -13,9 +13,14 @@
 // with sidebar widget (counters) + fullscreen board (5 columns) + polling +
 // transition toasts + click-a-card-to-open-or-start-the-review-session.
 // Repo & username are not hardcoded: configure via Settings in the board header on first use,
-// blank username falls back to the gh login account; config lives in browser localStorage.
+// blank username falls back to the gh login account. Config is synced host-side
+// (~/.dsh/pr-board.config.json) so every device hitting this web UI shares it;
+// only the poll interval stays per-browser.
 
 import { execFile } from "node:child_process";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { readFile, writeFile } from "node:fs/promises";
 
 export const name = "pr-board";
 export const inject = ["webServer"];
@@ -454,6 +459,39 @@ function json(res, status, body) {
   res.end(JSON.stringify(body));
 }
 
+// ---------------------------------------------------------------- host: shared config
+// Survives plugin reinstalls (lives in ~/.dsh, not the managed package dir)
+// and is shared by every browser/device hitting this web UI. Only the fields
+// that make sense account-wide sync; per-device preferences (poll interval)
+// stay in each browser's localStorage.
+
+const HOST_CFG_FILE = join(homedir(), ".dsh", "pr-board.config.json");
+
+function sanitizeCfg(c) {
+  if (!c || typeof c !== "object") return null;
+  const repos = Array.isArray(c.repos)
+    ? c.repos.filter((r) => typeof r === "string" && /^[^/\s]+\/[^/\s]+$/.test(r)).slice(0, 50)
+    : [];
+  const user = typeof c.user === "string" ? c.user.slice(0, 80) : "";
+  const workspace = typeof c.workspace === "string" ? c.workspace.slice(0, 120) : "";
+  const autoprompt = c.autoprompt !== false;
+  const days = Number(c.inactiveDays);
+  const inactiveDays = Number.isFinite(days) ? Math.min(365, Math.max(0, Math.round(days))) : 30;
+  return { repos, user, workspace, autoprompt, inactiveDays };
+}
+
+async function readHostCfg() {
+  try {
+    return sanitizeCfg(JSON.parse(await readFile(HOST_CFG_FILE, "utf8")));
+  } catch (e) {
+    return null;
+  }
+}
+
+async function writeHostCfg(cfg) {
+  await writeFile(HOST_CFG_FILE, JSON.stringify(cfg, null, 2) + "\n", "utf8");
+}
+
 function queryParam(req, key) {
   try {
     return new URL(req.url || "", "http://localhost").searchParams.get(key) || "";
@@ -479,6 +517,27 @@ function readBody(req) {
 export function apply(ctx) {
   ctx.effect(() => {
     const routes = [
+      {
+        kind: "exact",
+        path: "/api/pr-board/config",
+        handler: (req, res) => {
+          if (req.method === "GET") {
+            readHostCfg().then((cfg) => json(res, 200, { ok: true, config: cfg }), (e) => json(res, 500, { ok: false, error: String((e && e.message) || e) }));
+            return;
+          }
+          if (req.method !== "POST") return json(res, 405, { ok: false, error: "method-not-allowed" });
+          readBody(req).then(async (body) => {
+            const cfg = sanitizeCfg(body);
+            if (!cfg) return json(res, 400, { ok: false, error: "invalid config" });
+            try {
+              await writeHostCfg(cfg);
+              json(res, 200, { ok: true });
+            } catch (e) {
+              json(res, 500, { ok: false, error: "config write failed: " + String((e && e.message) || e) });
+            }
+          });
+        },
+      },
       {
         kind: "exact",
         path: "/api/pr-board/data",

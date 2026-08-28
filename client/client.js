@@ -172,7 +172,60 @@
     if (typeof c.inactiveDays !== "number" || !isFinite(c.inactiveDays) || c.inactiveDays < 0 || c.inactiveDays > 365) c.inactiveDays = 30;
     return c;
   }
-  function saveCfg() { try { localStorage.setItem(CFG_KEY, JSON.stringify(cfg)); } catch (e) {} }
+  function saveCfg() {
+    try { localStorage.setItem(CFG_KEY, JSON.stringify(cfg)); } catch (e) {}
+    cfgDirtyAt = Date.now();
+    if (!adopting) pushCfg();
+  }
+
+  // ---------- host-synced config ----------
+  // Account-wide fields live on the host (~/.dsh/pr-board.config.json) so
+  // every device hitting this web UI shares them. The poll interval stays
+  // per-browser. saveCfg pushes; pullCfg adopts host changes unless this
+  // browser edited something in the last two minutes (anti ping-pong).
+  var SYNC_KEYS = ["repos", "user", "workspace", "autoprompt", "inactiveDays"];
+  var cfgDirtyAt = 0;
+  var adopting = false;
+
+  function syncedCfg() {
+    var out = {};
+    SYNC_KEYS.forEach(function (k) { out[k] = cfg[k]; });
+    return out;
+  }
+
+  function pushCfg() {
+    api("/api/pr-board/config", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(syncedCfg())
+    }).catch(function () {});
+  }
+
+  function pullCfg(cb) {
+    api("/api/pr-board/config").then(function (v) {
+      if (!v || !v.ok) return cb && cb();
+      // Migration: a device that configured the board before host-sync existed
+      // seeds the host file on first contact.
+      if (!v.config) {
+        if (cfg.repos.length) pushCfg();
+        return cb && cb();
+      }
+      var remote = v.config;
+      var same = SYNC_KEYS.every(function (k) { return JSON.stringify(cfg[k]) === JSON.stringify(remote[k]); });
+      if (same) return cb && cb();
+      if (Date.now() - cfgDirtyAt < 120000) return cb && cb(); // local edit wins, for now
+      adopting = true;
+      SYNC_KEYS.forEach(function (k) { cfg[k] = remote[k]; });
+      if (activeRepo && cfg.repos.indexOf(activeRepo) < 0) activeRepo = cfg.repos[0] || "";
+      saveCfg(); // persists locally; adoption must not echo back to the host
+      adopting = false;
+      restartPolling();
+      renderWidget();
+      renderBoard();
+      refresh(false, true);
+      cb && cb();
+    }).catch(function () { cb && cb(); });
+  }
 
   // ---------- PR ↔ session bindings ----------
   // Exact, immediate association ("owner/repo#N" -> sessionId). Session titles
@@ -900,7 +953,10 @@
 
   function restartPolling() {
     if (pollTimer) clearInterval(pollTimer);
-    pollTimer = setInterval(function () { refresh(false, false); }, (cfg.interval || 5) * 60000);
+    pollTimer = setInterval(function () {
+      pullCfg(); // converge on config edited from another device
+      refresh(false, false);
+    }, (cfg.interval || 5) * 60000);
   }
 
   function floatPill() {
@@ -939,6 +995,7 @@
         floatPill();
         watchForSidebar();
         restartPolling();
+        pullCfg();
         refresh(false, true);
         return;
       }
@@ -947,6 +1004,7 @@
     }
     mountInSidebar(sidebar);
     restartPolling();
+    pullCfg();
     refresh(false, true);
   }
 

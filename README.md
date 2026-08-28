@@ -96,10 +96,15 @@ Then restart the web profile and refresh the page.
    walkthrough) and then ask what you'd like to do. That first message is
    also what generates the session title. With no workspace set (or via the
    per-card **↗** button) cards open GitHub.
-5. Config is stored per-browser (localStorage).
+5. Config is shared across devices: account-wide fields (repos, username,
+   review workspace, auto-prompt, inactivity window) sync to the host
+   (`~/.dsh/pr-board.config.json`); each browser keeps only its poll
+   interval. A new device picks the config up on first load; edits converge
+   on every poll.
 
-配置存在浏览器 localStorage（每个浏览器/设备设一次）；用户名留空则自动采用 host
-上 `gh` 登录的账号；多仓库以短名区分，重名时回退完整 `owner/name`。
+配置跨设备共享：账号级字段（仓库列表、用户名、review workspace、自动
+prompt、不活跃天数）同步到 host（`~/.dsh/pr-board.config.json`），每个浏览器
+只保留自己的轮询间隔。新设备首次打开即继承配置，改动在每次轮询时收敛。
 
 ## How states are computed / 状态如何计算
 
