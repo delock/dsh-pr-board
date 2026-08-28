@@ -40,6 +40,9 @@ function ghError(r) {
   if (/auth|login|credential/i.test(raw)) {
     return "GitHub CLI is not authenticated. Run `gh auth login` on the DSH host, then reload this page.";
   }
+  if (/rate limit|secondary rate/i.test(raw)) {
+    return "GitHub API rate limit hit (search allows ~30 requests/min). The board keeps showing the last good data — retry in a minute.";
+  }
   return raw;
 }
 
@@ -400,7 +403,11 @@ async function collect(repo, me, days) {
 async function boardData(repo, me, fresh, days) {
   const key = repo + "#" + me + "#" + (days || 0);
   const hit = cache.get(key);
-  if (!fresh && hit && Date.now() - hit.at < TTL_MS) return hit.promise;
+  // fresh=1 (the Refresh button) bypasses the 60s TTL but not an 8s floor:
+  // two quick clicks would otherwise fire the full 9-search burst per repo
+  // straight into the 30-requests/min search quota.
+  const minAge = fresh ? 8000 : TTL_MS;
+  if (hit && Date.now() - hit.at < minAge) return hit.promise;
   const promise = collect(repo, me, days).catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
   cache.set(key, { at: Date.now(), promise });
   return promise;
@@ -423,11 +430,21 @@ async function boardDataMulti(repos, me, fresh, days) {
   return { ok: true, user: me, generatedAt: new Date().toISOString(), repos: out };
 }
 
+// Resolved-username cache: with a blank configured username every /data call
+// used to hit `gh api user` — one REST call per refresh per browser for a fact
+// that changes ~never. 10-minute TTL.
+const userCache = new Map();
+const USER_TTL_MS = 10 * 60 * 1000;
+
 async function resolveUser(user) {
   if (user) return user;
+  const hit = userCache.get("me");
+  if (hit && Date.now() - hit.at < USER_TTL_MS) return hit.login;
   const r = await gh(["api", "user", "-q", ".login"]);
   if (!r.ok) throw new Error("gh api user failed: " + ghError(r));
-  return r.stdout.trim();
+  const login = r.stdout.trim();
+  userCache.set("me", { at: Date.now(), login });
+  return login;
 }
 
 // ---------------------------------------------------------------- host: routes
