@@ -100,8 +100,12 @@
 #pr-board-overlay .pbo-badge-draft{padding:0 6px;border-radius:6px;font-size:11px;background:rgba(148,163,184,.25);color:#cbd5e1}
 #pr-board-overlay .pbo-claim{margin-top:6px;width:100%;padding:3px 0;border-radius:6px;border:1px solid rgba(255,255,255,.2);background:rgba(125,211,252,.15);color:#bae6fd;font-size:11px;font-weight:600;cursor:pointer}
 #pr-board-overlay .pbo-claim:hover{background:rgba(125,211,252,.3)}
-#pr-board-overlay .pbo-gh{position:absolute;top:4px;right:4px;width:18px;height:18px;line-height:16px;text-align:center;padding:0;border:none;border-radius:5px;background:transparent;color:rgba(255,255,255,.4);font-size:12px;cursor:pointer;opacity:0}
-#pr-board-overlay .pbo-card:hover .pbo-gh{opacity:1}
+/* pointer-events:none until hover: on touch there is no hover, and an
+   invisible-but-tappable corner button hijacked card taps (tap → GitHub
+   instead of the review session). */
+#pr-board-overlay .pbo-gh{position:absolute;top:4px;right:4px;width:18px;height:18px;line-height:16px;text-align:center;padding:0;border:none;border-radius:5px;background:transparent;color:rgba(255,255,255,.4);font-size:12px;cursor:pointer;opacity:0;pointer-events:none}
+#pr-board-overlay .pbo-card:hover .pbo-gh{opacity:1;pointer-events:auto}
+@media (hover:none){#pr-board-overlay .pbo-gh{opacity:.45;pointer-events:auto}}
 #pr-board-overlay .pbo-gh:hover{background:rgba(255,255,255,.15);color:#fff}
 #pr-board-overlay .pbo-empty{padding:10px;border-radius:8px;border:1px dashed rgba(255,255,255,.15);color:rgba(255,255,255,.4);font-size:11px;text-align:center}
 #pr-board-overlay .pbo-error{margin:20px auto;padding:10px 16px;border-radius:8px;background:rgba(239,68,68,.15);color:#fca5a5;font-size:13px;max-width:520px}
@@ -382,6 +386,13 @@
   // click listener and strand jumpBusy=true, which made every later card
   // click a silent no-op — so failures now surface as toasts and the busy
   // flag always clears (watchdog below).
+  // Async GitHub fallback: window.open after an await is outside the user
+  // gesture chain, so mobile Safari's popup blocker silently eats it. Toast
+  // the guidance instead; the visible ↗ button remains the explicit path.
+  function ghFallback(reason) {
+    toast(reason + " — open GitHub with the ↗ button on the card.");
+  }
+
   function openReviewSession(card) {
     if (jumpBusy) return;
     if (!CTX || !CTX.sessions) { window.open(card.url, "_blank"); return; }
@@ -393,9 +404,8 @@
       if (bound) return finishJump(bound, card, false, tag);
       if (typeof CTX.sessions.search !== "function") {
         jumpBusy = false;
-        toast("PR board: ctx.sessions.search is unavailable on this host — opened GitHub. Details in the browser console.");
+        toast("PR board: ctx.sessions.search is unavailable on this host. Details in the browser console.");
         console.error("[pr-board] ctx.sessions keys:", CTX.sessions && Object.keys(CTX.sessions));
-        window.open(card.url, "_blank");
         return;
       }
       CTX.sessions.search(tag).then(function (res) {
@@ -412,7 +422,7 @@
           return finishJump(sid, card, false, tag);
         }
         createReviewSession(card, key, tag);
-      }, function (e) { jumpBusy = false; toast("Session search failed: " + errText(e)); window.open(card.url, "_blank"); });
+      }, function (e) { jumpBusy = false; ghFallback("Session search failed: " + errText(e)); });
     } catch (e) {
       jumpBusy = false;
       console.error("[pr-board] openReviewSession failed:", e);
@@ -423,14 +433,12 @@
   function createReviewSession(card, key, tag) {
     if (!cfg.workspace) {
       jumpBusy = false;
-      toast("No review workspace configured — opened GitHub instead. Set one in Settings.");
-      window.open(card.url, "_blank");
+      ghFallback("No review workspace configured. Set one in Settings");
       return;
     }
     if (!CTX.workspaces || !CTX.workspaces.startSession) {
       jumpBusy = false;
-      toast("Creating review session failed: workspaces service unavailable");
-      window.open(card.url, "_blank");
+      ghFallback("Creating review session failed: workspaces service unavailable");
       return;
     }
     // The official path (same as the sidebar New button): connectWorkspace
@@ -443,8 +451,7 @@
     try { CTX.workspaces.startSession(cfg.workspace); }
     catch (e) {
       jumpBusy = false;
-      toast("Creating review session failed: " + errText(e));
-      window.open(card.url, "_blank");
+      ghFallback("Creating review session failed: " + errText(e));
       return;
     }
     // startSession is fire-and-forget: watch the sessions list until `current`
