@@ -24,6 +24,8 @@ export const inject = ["webServer"];
 
 const GH_BIN = "gh";
 const SEARCH_FIELDS = "number,title,url,author,createdAt,updatedAt,closedAt,state,isDraft";
+// `gh search issues --json` rejects PR-only fields like isDraft.
+const ISSUE_SEARCH_FIELDS = "number,title,url,author,createdAt,updatedAt,closedAt,state";
 
 // gh spawns fail with ENOENT when the binary is missing, and unauthenticated
 // runs surface as "gh auth login" hints in stderr. Translate both into
@@ -62,7 +64,7 @@ async function ghSearch(repo, qualifiers, extraArgs) {
 
 // Issue search: `gh search issues` also returns PRs unless `is:issue` pins it.
 async function ghSearchIssues(repo, qualifiers, extraArgs) {
-  const args = ["search", "issues", "--repo", repo, "is:issue", ...qualifiers, ...extraArgs, "--json", SEARCH_FIELDS];
+  const args = ["search", "issues", "--repo", repo, "is:issue", ...qualifiers, ...extraArgs, "--json", ISSUE_SEARCH_FIELDS];
   const r = await gh(args);
   if (!r.ok) throw new Error(ghError(r));
   try {
@@ -272,16 +274,19 @@ async function collect(repo, me) {
   const open = ["--state", "open"];
 
   // Four pools: review-requested / reviewed-by / commented (open) / recent involvement (incl. merged)
+  // Issue pools degrade to empty on failure — issue data must never sink the
+  // PR board (the sidebar's "error" chip should only mean the PR pipeline died).
+  const iss = (p) => p.then((v) => v, () => []);
   const [requested, reviewed, commented, recent, newest, issAssigned, issMentioned, issCommented, issRecent] = await Promise.all([
     ghSearch(repo, [`review-requested:${me}`], [...open, "--limit", "50"]),
     ghSearch(repo, [`reviewed-by:${me}`], [...open, "--limit", "50"]),
     ghSearch(repo, [`commenter:${me}`], [...open, "--limit", "50"]),
     ghSearch(repo, [`reviewed-by:${me}`], ["--sort", "updated", "--limit", "30"]),
     ghSearch(repo, [], [...open, "--sort", "created", "--limit", "40"]),
-    ghSearchIssues(repo, [`assignee:${me}`], [...open, "--limit", "50"]),
-    ghSearchIssues(repo, [`mentions:${me}`], [...open, "--limit", "50"]),
-    ghSearchIssues(repo, [`commenter:${me}`], [...open, "--limit", "50"]),
-    ghSearchIssues(repo, [`involves:${me}`], ["--sort", "updated", "--limit", "30"]),
+    iss(ghSearchIssues(repo, [`assignee:${me}`], [...open, "--limit", "50"])),
+    iss(ghSearchIssues(repo, [`mentions:${me}`], [...open, "--limit", "50"])),
+    iss(ghSearchIssues(repo, [`commenter:${me}`], [...open, "--limit", "50"])),
+    iss(ghSearchIssues(repo, [`involves:${me}`], ["--sort", "updated", "--limit", "30"])),
   ]);
 
   const requestedSet = new Set(requested.map((p) => p.number));
