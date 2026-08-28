@@ -267,11 +267,19 @@ function card(pr, verdict, extra) {
 const cache = new Map(); // key -> {at, promise}
 const TTL_MS = 60000;
 
-async function collect(repo, me) {
+async function collect(repo, me, days) {
   const [owner, name] = repo.split("/");
   if (!owner || !name) throw new Error("repo must be owner/name");
 
   const open = ["--state", "open"];
+
+  // Inactivity filter: anything whose updatedAt (any touch — comments, pushes,
+  // label changes) is older than N days drops out of every column. days<=0
+  // disables it. Applied host-side so the counts the sidebar shows agree with
+  // the board, and the threshold rides the cache key.
+  const daysN = Number(days);
+  const cutoff = Number.isFinite(daysN) && daysN > 0 ? Date.now() - daysN * 86400 * 1000 : 0;
+  const active = (iso) => !cutoff || ts(iso) >= cutoff;
 
   // Four pools: review-requested / reviewed-by / commented (open) / recent involvement (incl. merged)
   // Issue pools degrade to empty on failure — issue data must never sink the
@@ -295,7 +303,7 @@ async function collect(repo, me) {
 
   // merged: recently merged PRs I reviewed
   const merged = recent
-    .filter((p) => p.state === "merged")
+    .filter((p) => p.state === "merged" && active(p.closedAt))
     .sort((a, b) => ts(b.closedAt) - ts(a.closedAt))
     .slice(0, 8)
     .map((p) => card(p, { state: "merged", reason: "" }, { when: p.closedAt, whenTs: ts(p.closedAt) }));
@@ -309,6 +317,7 @@ async function collect(repo, me) {
   for (const num of numbers) {
     const d = detailMap.get(num);
     if (!d || d.state !== "OPEN") continue;
+    if (!active(d.updatedAt)) continue; // dormant beyond the inactivity window
     const verdict = classify(d, me, requestedSet);
     if (typeof verdict === "string") continue; // mine / other: not shown
     let when = "", whenTs = 0;
@@ -322,9 +331,11 @@ async function collect(repo, me) {
     cols[verdict.state].push(card(d, verdict, { when, whenTs }));
   }
 
-  // inbox: newest open PRs I'm not involved in
+  // inbox: newest open PRs I'm not involved in (updatedAt, not createdAt — a
+  // 40-day-old PR the author still pushes to is active)
   for (const p of newest) {
     if (involvedMap.has(p.number) || (p.author && p.author.login) === me) continue;
+    if (!active(p.updatedAt)) continue;
     cols.inbox.push(card(p, { state: "inbox", reason: "" }, { when: p.createdAt, whenTs: ts(p.createdAt) }));
   }
 
@@ -346,6 +357,7 @@ async function collect(repo, me) {
   for (const num of issueNumbers) {
     const d = issueDetailMap.get(num);
     if (!d || d.state !== "OPEN") continue;
+    if (!active(d.updatedAt)) continue;
     const verdict = classifyIssue(d, me, assignedSet, mentionedSet);
     if (typeof verdict === "string") continue;
     const when = verdict.whenTs ? new Date(verdict.whenTs).toISOString() : "";
@@ -354,7 +366,7 @@ async function collect(repo, me) {
   // recently closed issues I was involved in (regression watch), newest first
   const CLOSED_WINDOW_MS = 14 * 86400 * 1000;
   const closedRecent = issRecent
-    .filter((i) => i.state === "CLOSED" && Date.now() - ts(i.closedAt) < CLOSED_WINDOW_MS)
+    .filter((i) => i.state === "CLOSED" && Date.now() - ts(i.closedAt) < CLOSED_WINDOW_MS && active(i.closedAt))
     .sort((a, b) => ts(b.closedAt) - ts(a.closedAt))
     .slice(0, 8)
     .map((i) => card(i, { state: "closed_recent", reason: "" }, { when: i.closedAt, whenTs: ts(i.closedAt) }));
@@ -385,22 +397,22 @@ async function collect(repo, me) {
   };
 }
 
-async function boardData(repo, me, fresh) {
-  const key = repo + "#" + me;
+async function boardData(repo, me, fresh, days) {
+  const key = repo + "#" + me + "#" + (days || 0);
   const hit = cache.get(key);
   if (!fresh && hit && Date.now() - hit.at < TTL_MS) return hit.promise;
-  const promise = collect(repo, me).catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
+  const promise = collect(repo, me, days).catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
   cache.set(key, { at: Date.now(), promise });
   return promise;
 }
 
-async function boardDataMulti(repos, me, fresh) {
+async function boardDataMulti(repos, me, fresh, days) {
   // One collect() per repo, each cached independently; a repo that fails
   // degrades to its own error entry instead of sinking the whole response.
   const out = await Promise.all(
     repos.map(async (repo) => {
       try {
-        const d = await boardData(repo, me, fresh);
+        const d = await boardData(repo, me, fresh, days);
         if (!d.ok) return { repo, ok: false, error: d.error };
         return { repo, ok: true, counts: d.counts, columns: d.columns, issueCounts: d.issueCounts, issueColumns: d.issueColumns };
       } catch (e) {
@@ -460,8 +472,10 @@ export function apply(ctx) {
             return json(res, 400, { ok: false, error: "No repositories configured: add one via + in the sidebar widget" });
           }
           const fresh = queryParam(req, "fresh") === "1";
+          const daysRaw = parseInt(queryParam(req, "days"), 10);
+          const days = Number.isFinite(daysRaw) ? daysRaw : 30;
           resolveUser(queryParam(req, "user"))
-            .then((me) => boardDataMulti(repos, me, fresh))
+            .then((me) => boardDataMulti(repos, me, fresh, days))
             .then((v) => json(res, 200, v), (e) => json(res, 500, { ok: false, error: String((e && e.message) || e) }));
         },
       },
@@ -477,7 +491,7 @@ export function apply(ctx) {
             if (!/^[^/]+\/[^/]+$/.test(repo) || !number || !me) return json(res, 400, { ok: false, error: "missing parameters" });
             const r = await gh(["api", "-X", "POST", `repos/${repo}/pulls/${number}/requested_reviewers`, "-f", `reviewers[]=${me}`]);
             if (!r.ok) return json(res, 200, { ok: false, error: ghError(r) });
-            cache.delete(repo + "#" + me);
+            for (const key of [...cache.keys()]) if (key.startsWith(repo + "#" + me + "#")) cache.delete(key);
             json(res, 200, { ok: true });
           });
         },

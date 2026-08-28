@@ -62,6 +62,8 @@
 #pr-board-overlay .pbo-tab .pbo-tab-x:hover{opacity:1;color:#fca5a5}
 #pr-board-overlay .pbo-tab-add{border-style:dashed;padding:3px 12px;font-weight:700}
 #pr-board-overlay select,#pr-board-overlay .pbo-btn{padding:4px 10px;border-radius:6px;border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.08);color:#fff;font-size:12px;cursor:pointer}
+#pr-board-overlay .pbo-dwrap{display:inline-flex;align-items:center;gap:3px;font-size:12px;color:rgba(255,255,255,.75)}
+#pr-board-overlay .pbo-dwrap input{width:48px;padding:4px 6px;border-radius:6px;border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.08);color:#fff;font-size:12px}
 #pr-board-overlay .pbo-btn:hover{background:rgba(255,255,255,.18)}
 #pr-board-overlay .pbo-body{flex:1;overflow:auto;display:grid;gap:10px;padding:12px 14px;grid-template-columns:repeat(5,minmax(230px,1fr));align-content:start;align-items:start}
 /* Narrow widths: keep the five columns on ONE row at fixed width and pan
@@ -111,7 +113,7 @@
   var CTX = null;
 
   var CFG_KEY = "prboard.cfg", LAST_KEY = "prboard.last", BIND_KEY = "prboard.sessions";
-  var DEFAULTS = { repos: [], user: "", workspace: "", autoprompt: true, interval: 5, sort: { waiting_me: "new", waiting_author: "new" } };
+  var DEFAULTS = { repos: [], user: "", workspace: "", autoprompt: true, inactiveDays: 30, interval: 5, sort: { waiting_me: "new", waiting_author: "new" } };
   var COLS = [
     { key: "waiting_me", name: "Waiting on me", color: "#60a5fa" },
     { key: "waiting_author", name: "Waiting on author", color: "#fbbf24" },
@@ -161,6 +163,7 @@
     if (!c.sort) c.sort = { waiting_me: "new", waiting_author: "new" };
     if (typeof c.workspace !== "string") c.workspace = "";
     if (typeof c.autoprompt !== "boolean") c.autoprompt = true;
+    if (typeof c.inactiveDays !== "number" || !isFinite(c.inactiveDays) || c.inactiveDays < 0 || c.inactiveDays > 365) c.inactiveDays = 30;
     return c;
   }
   function saveCfg() { try { localStorage.setItem(CFG_KEY, JSON.stringify(cfg)); } catch (e) {} }
@@ -235,7 +238,8 @@
     }
     if (busy) return Promise.resolve();
     busy = true;
-    var q = "?repos=" + encodeURIComponent(cfg.repos.join(",")) + "&user=" + encodeURIComponent(cfg.user) + (fresh ? "&fresh=1" : "");
+    var q = "?repos=" + encodeURIComponent(cfg.repos.join(",")) + "&user=" + encodeURIComponent(cfg.user) +
+      "&days=" + (isFinite(cfg.inactiveDays) ? cfg.inactiveDays : 30) + (fresh ? "&fresh=1" : "");
     return api("/api/pr-board/data" + q).then(function (v) {
       busy = false;
       // Transient failures (e.g. a search secondary rate-limit blip) must not
@@ -767,6 +771,7 @@
       '<div class="pbo-head"><span class="pbo-title">PR Board</span>' +
       '<span class="pbo-sub" id="pbo-sub"></span><span class="pbo-spacer"></span>' +
       '<button class="pbo-btn" id="pbo-mode" title="Switch between the pull-request and issue boards">→ Issues</button>' +
+      '<span class="pbo-dwrap" title="Hide PRs and issues with no activity (any touch) for more than this many days. 0 = show everything."><input id="pbo-days" type="number" min="0" max="365" step="5" value="' + (isFinite(cfg.inactiveDays) ? cfg.inactiveDays : 30) + '">d</span>' +
       '<select id="pbo-interval">' +
       [1, 2, 5, 10, 30].map(function (m) {
         return '<option value="' + m + '"' + (m === cfg.interval ? " selected" : "") + ">" + m + " min poll</option>";
@@ -836,6 +841,15 @@
     document.getElementById("pbo-mode").onclick = function () {
       boardMode = boardMode === "issue" ? "pr" : "issue";
       renderBoard();
+    };
+    document.getElementById("pbo-days").onchange = function () {
+      var n = parseInt(this.value, 10);
+      if (!isFinite(n) || n < 0) n = 30;
+      if (n > 365) n = 365;
+      this.value = n;
+      cfg.inactiveDays = n;
+      saveCfg();
+      refresh(false, true); // new days value rides the request; host cache is keyed by it
     };
 
     // Horizontal pan for the narrow single-row layout: touch pans natively via
