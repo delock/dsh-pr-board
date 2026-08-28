@@ -31,8 +31,18 @@
 #pr-board-widget .pbw-repo .pbw-chip.author{color:#fbbf24}
 #pr-board-widget .pbw-repo .pbw-chip.ready{color:#34d399}
 #pr-board-widget .pbw-repo .pbw-chip.inbox{color:#c4b5fd}
-#pr-board-widget .pbw-iss{padding-left:10px}
-#pr-board-widget .pbw-iss .pbw-iss-tag{flex:none;font-size:9px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;opacity:.55;margin-right:2px}
+/* Two-row repo block: name column + four number columns. The issue row's
+   numbers land in the same columns as the PR row's, so me/reporter sit
+   directly under their PR counterparts (columns 1fr + 4×minmax auto). */
+#pr-board-widget .pbw-rblock{display:grid;grid-template-columns:minmax(0,1fr) repeat(4,minmax(17px,auto));gap:2px 4px;padding:1px 0;border-radius:6px;align-items:center}
+#pr-board-widget .pbw-rblock:hover{background:color-mix(in srgb,currentColor 10%,transparent)}
+#pr-board-widget .pbw-rblock .pbw-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
+#pr-board-widget .pbw-rblock .pbw-cell{display:inline-flex;justify-content:center;min-width:17px;padding:1px 4px;border-radius:8px;font-size:11px;font-weight:700;background:color-mix(in srgb,currentColor 10%,transparent)}
+#pr-board-widget .pbw-rblock .pbw-cell.me{color:#60a5fa}
+#pr-board-widget .pbw-rblock .pbw-cell.author{color:#fbbf24}
+#pr-board-widget .pbw-rblock .pbw-cell.ready{color:#34d399}
+#pr-board-widget .pbw-rblock .pbw-cell.inbox{color:#c4b5fd}
+#pr-board-widget .pbw-rblock .pbw-iss-label{font-size:9px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;opacity:.55;white-space:nowrap}
 #pr-board-widget.pbw-pulse{animation:pbw-flash 1.2s 3}
 @keyframes pbw-flash{50%{background:color-mix(in srgb,#60a5fa 25%,transparent)}}
 #pr-board-overlay{position:fixed;inset:0;z-index:2147483000;display:none;background:color-mix(in srgb,#000000 62%,transparent);backdrop-filter:blur(3px)}
@@ -548,17 +558,19 @@
         return;
       }
       var c = rd.counts;
-      html += '<div class="pbw-repo" data-widget-repo="' + esc(repo) + '" title="' + esc(repo) + ' pull requests"><span class="pbw-name">' +
-        esc(displayName(repo)) + '</span><span class="pbw-chip me" title="Waiting on me">' + c.waiting_me +
-        '</span><span class="pbw-chip author" title="Waiting on author">' + c.waiting_author +
-        '</span><span class="pbw-chip ready" title="Ready to merge">' + c.ready_merge +
-        '</span><span class="pbw-chip inbox" title="Inbox: new PRs to triage">' + c.inbox + "</span></div>";
-      // Second row per repo: issues — click opens the issue board.
       var ic = rd.issueCounts || { waiting_me: 0, waiting_reporter: 0 };
-      html += '<div class="pbw-repo pbw-iss" data-widget-issues="' + esc(repo) + '" title="' + esc(repo) + ' issues">' +
-        '<span class="pbw-iss-tag">iss</span>' +
-        '<span class="pbw-chip me" title="Issues waiting on me">' + ic.waiting_me +
-        '</span><span class="pbw-chip author" title="Issues waiting on reporter">' + ic.waiting_reporter + "</span></div>";
+      // Two aligned rows in one grid: PR numbers on top, issue numbers in the
+      // same columns underneath (me under me, reporter under author).
+      html += '<div class="pbw-rblock" data-widget-repo="' + esc(repo) + '" title="' + esc(repo) + ' pull requests">' +
+        '<span class="pbw-name">' + esc(displayName(repo)) + "</span>" +
+        '<span class="pbw-cell me" title="PRs waiting on me">' + c.waiting_me + "</span>" +
+        '<span class="pbw-cell author" title="PRs waiting on author">' + c.waiting_author + "</span>" +
+        '<span class="pbw-cell ready" title="PRs ready to merge">' + c.ready_merge + "</span>" +
+        '<span class="pbw-cell inbox" title="New PRs to triage">' + c.inbox + "</span>" +
+        '<span class="pbw-iss-label" data-widget-issues="' + esc(repo) + '" title="' + esc(repo) + ' issues">issue</span>' +
+        '<span class="pbw-cell me" data-widget-issues="' + esc(repo) + '" title="Issues waiting on me">' + ic.waiting_me + "</span>" +
+        '<span class="pbw-cell author" data-widget-issues="' + esc(repo) + '" title="Issues waiting on reporter">' + ic.waiting_reporter + "</span>" +
+        "</div>";
     });
     row.innerHTML = html;
   }
