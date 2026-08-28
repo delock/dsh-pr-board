@@ -142,6 +142,8 @@
     "conflict": "Approved but conflicting",
     "draft": "Approved but draft",
     "merge-queue": "In merge queue",
+    "queue-checks-awaiting": "Merge queue: checks not started (approve the run?)",
+    "queue-checks-failed": "Merge queue: checks failed",
     "auto-merge": "Auto-merge armed",
     "auto-merge-blocked": "Auto-merge blocked (failing checks / branch)"
   };

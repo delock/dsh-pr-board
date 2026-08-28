@@ -191,11 +191,19 @@ function classify(pr, me, requestedSet) {
   const myApproved = myLastReview && myLastReview.state === "APPROVED" ? ts(myLastReview.submittedAt) : 0;
   const commitsAfterMyApproval = myApproved && lastCommit > myApproved;
 
-  // Merge queue: the merge machinery has taken over — neither my move nor the
-  // author's. Queue-enabled branch protection does not necessarily require
-  // reviews (reviewDecision can be null) and authors routinely rebase to get
-  // in, so this check must come before the approval/staleness branches.
-  if (pr.isInMergeQueue) return { state: "ready_merge", reason: "merge-queue" };
+  // Merge queue: the merge machinery has taken over — but "taken over" splits
+  // by CI state. Checks not STARTED (EXPECTED/absent) usually means a human
+  // gate — in approval-gated workflows, mine: the queue is stalled until I
+  // let the tests run, which is exactly a waiting-on-me. Checks RUNNING
+  // (PENDING) or green is nobody's move; checks failed mid-queue get the PR
+  // kicked out, and the fix is the author's.
+  if (pr.isInMergeQueue) {
+    const lastCommitNode = pr.commits && pr.commits.nodes && pr.commits.nodes[0] && pr.commits.nodes[0].commit;
+    const ci = (lastCommitNode && lastCommitNode.statusCheckRollup && lastCommitNode.statusCheckRollup.state) || "";
+    if (ci === "FAILURE" || ci === "ERROR") return { state: "waiting_author", reason: "queue-checks-failed" };
+    if (ci === "EXPECTED" || ci === "") return { state: "waiting_me", reason: "queue-checks-awaiting" };
+    return { state: "ready_merge", reason: "merge-queue" };
+  }
 
   // Auto-merge: a standing promise to merge once requirements are met. When
   // something human-fixable blocks it (failing checks = BLOCKED, out-of-date
