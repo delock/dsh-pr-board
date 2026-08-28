@@ -43,6 +43,7 @@
 #pr-board-widget .pbw-rblock .pbw-cell.ready{color:#34d399}
 #pr-board-widget .pbw-rblock .pbw-cell.inbox{color:#c4b5fd}
 #pr-board-widget .pbw-rblock .pbw-iss-label{font-size:9px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;opacity:.55;white-space:nowrap}
+#pr-board-widget .pbw-rblock .pbw-kind-tag{font-style:normal;font-size:9px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;opacity:.55;margin-left:4px}
 #pr-board-widget.pbw-pulse{animation:pbw-flash 1.2s 3}
 @keyframes pbw-flash{50%{background:color-mix(in srgb,#60a5fa 25%,transparent)}}
 #pr-board-overlay{position:fixed;inset:0;z-index:2147483000;display:none;background:color-mix(in srgb,#000000 62%,transparent);backdrop-filter:blur(3px)}
@@ -236,6 +237,16 @@
     var q = "?repos=" + encodeURIComponent(cfg.repos.join(",")) + "&user=" + encodeURIComponent(cfg.user) + (fresh ? "&fresh=1" : "");
     return api("/api/pr-board/data" + q).then(function (v) {
       busy = false;
+      // Transient failures (e.g. a search secondary rate-limit blip) must not
+      // wipe the board to "error": keep the last good snapshot — whole-response
+      // level and per-repo level. The error state then only appears when there
+      // has never been a good load for that repo.
+      if (!v.ok && data && data.ok) return;
+      if (v.ok && data && data.ok && v.repos && data.repos) {
+        var prevByRepo = {};
+        data.repos.forEach(function (r) { if (r.ok) prevByRepo[r.repo] = r; });
+        v.repos.forEach(function (r) { if (!r.ok && prevByRepo[r.repo]) Object.assign(r, prevByRepo[r.repo]); });
+      }
       data = v;
       renderWidget();
       renderBoard();
@@ -562,7 +573,7 @@
       // Two aligned rows in one grid: PR numbers on top, issue numbers in the
       // same columns underneath (me under me, reporter under author).
       html += '<div class="pbw-rblock" data-widget-repo="' + esc(repo) + '" title="' + esc(repo) + ' pull requests">' +
-        '<span class="pbw-name">' + esc(displayName(repo)) + "</span>" +
+        '<span class="pbw-name">' + esc(displayName(repo)) + '<i class="pbw-kind-tag">pr</i></span>' +
         '<span class="pbw-cell me" title="PRs waiting on me">' + c.waiting_me + "</span>" +
         '<span class="pbw-cell author" title="PRs waiting on author">' + c.waiting_author + "</span>" +
         '<span class="pbw-cell ready" title="PRs ready to merge">' + c.ready_merge + "</span>" +
