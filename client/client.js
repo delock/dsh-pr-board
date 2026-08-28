@@ -402,6 +402,19 @@
     toast(reason + " — open GitHub with the ↗ button on the card.");
   }
 
+  // Filesystem path of a workspace id (search-result sessions carry cwd, and
+  // workspaces are identified by path there), or null when unknown.
+  function workspacePathOf(id) {
+    try {
+      var snap = CTX.workspaces && CTX.workspaces.list && CTX.workspaces.list.getSnapshot();
+      var items = (snap && snap.items) || [];
+      for (var i = 0; i < items.length; i++) {
+        if (items[i].workspaceId === id) return items[i].path || items[i].cwd || null;
+      }
+    } catch (e) {}
+    return null;
+  }
+
   function openReviewSession(card) {
     if (jumpBusy) return;
     if (!CTX || !CTX.sessions) { window.open(card.url, "_blank"); return; }
@@ -411,19 +424,34 @@
       var key = sessionKey(card), tag = sessionTag(card);
       var bound = boundSession(key);
       if (bound) return finishJump(bound, card, false, tag);
+      // No workspace for this repo → no session integration at all: an
+      // unscoped global search would contradict the per-repo workspace model.
+      var repo = card.repo || currentRepo();
+      var wsId = workspaceFor(repo);
+      if (!wsId) {
+        jumpBusy = false;
+        ghFallback("No review workspace configured for " + repo + ". Set one in Settings");
+        return;
+      }
       if (typeof CTX.sessions.search !== "function") {
         jumpBusy = false;
         toast("PR board: ctx.sessions.search is unavailable on this host. Details in the browser console.");
         console.error("[pr-board] ctx.sessions keys:", CTX.sessions && Object.keys(CTX.sessions));
         return;
       }
+      var wsPath = workspacePathOf(wsId);
       // Search by the bare number — FTS over "repo#N" needs every term in the
       // title, and manually-created conversations ("Review PR #8265 …") often
-      // don't name the repo at all. Then score: "repo#N" (our convention)
-      // beats "#N" (human convention); ties go to the most recently updated.
-      // Bare numbers without "#" never match — too false-positive-prone.
+      // don't name the repo at all. Results are then scoped to this repo's
+      // workspace (sessions carry cwd; items without cwd pass defensively),
+      // and scored: "repo#N" (our convention) beats "#N" (human convention);
+      // ties go to the most recently updated. Bare numbers without "#" never
+      // match — too false-positive-prone.
       CTX.sessions.search(String(card.number)).then(function (res) {
         var items = (res && res.ok && res.value && res.value.items) || [];
+        if (wsPath) {
+          items = items.filter(function (it) { return typeof it.cwd !== "string" || it.cwd === wsPath; });
+        }
         var best = null;
         for (var i = 0; i < items.length; i++) {
           var it = items[i];
