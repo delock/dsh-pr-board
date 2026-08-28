@@ -417,18 +417,27 @@
         console.error("[pr-board] ctx.sessions keys:", CTX.sessions && Object.keys(CTX.sessions));
         return;
       }
-      CTX.sessions.search(tag).then(function (res) {
+      // Search by the bare number — FTS over "repo#N" needs every term in the
+      // title, and manually-created conversations ("Review PR #8265 …") often
+      // don't name the repo at all. Then score: "repo#N" (our convention)
+      // beats "#N" (human convention); ties go to the most recently updated.
+      // Bare numbers without "#" never match — too false-positive-prone.
+      CTX.sessions.search(String(card.number)).then(function (res) {
         var items = (res && res.ok && res.value && res.value.items) || [];
-        var hit = null;
+        var best = null;
         for (var i = 0; i < items.length; i++) {
           var it = items[i];
           var title = it.title || "";
-          if (title.indexOf(tag) >= 0) { hit = it; break; }
+          var score = title.indexOf(tag) >= 0 ? 3 : (title.indexOf("#" + card.number) >= 0 ? 2 : 0);
+          if (!score) continue;
+          var at = Date.parse(it.updatedAt || "") || 0;
+          if (!best || score > best.score || (score === best.score && at > best.at)) {
+            best = { score: score, at: at, sid: it.sessionId || it.id };
+          }
         }
-        if (hit) {
-          var sid = hit.sessionId || hit.id;
-          bindSession(key, sid);
-          return finishJump(sid, card, false, tag);
+        if (best) {
+          bindSession(key, best.sid);
+          return finishJump(best.sid, card, false, tag);
         }
         createReviewSession(card, key, tag);
       }, function (e) { jumpBusy = false; ghFallback("Session search failed: " + errText(e)); });
