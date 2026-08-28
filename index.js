@@ -481,12 +481,12 @@ function sanitizeCfg(c) {
     ? c.repos.filter((r) => typeof r === "string" && /^[^/\s]+\/[^/\s]+$/.test(r)).slice(0, 50)
     : [];
   const user = typeof c.user === "string" ? c.user.slice(0, 80) : "";
-  const workspace = typeof c.workspace === "string" ? c.workspace.slice(0, 120) : "";
   const autoprompt = c.autoprompt !== false;
   const days = Number(c.inactiveDays);
   const inactiveDays = Number.isFinite(days) ? Math.min(365, Math.max(0, Math.round(days))) : 30;
-  // Per-repo review workspaces (repo -> workspaceId); the scalar `workspace`
-  // stays as the default for repos without their own.
+  // Per-repo review workspaces (repo -> workspaceId). There is no global
+  // default; a legacy scalar `workspace` in the payload is ignored (clients
+  // migrate it into the map themselves).
   const workspaces = {};
   if (c.workspaces && typeof c.workspaces === "object" && !Array.isArray(c.workspaces)) {
     for (const [repo, id] of Object.entries(c.workspaces)) {
@@ -495,7 +495,7 @@ function sanitizeCfg(c) {
       }
     }
   }
-  return { repos, user, workspace, workspaces, autoprompt, inactiveDays };
+  return { repos, user, workspaces, autoprompt, inactiveDays };
 }
 
 async function readHostCfg() {

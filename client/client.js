@@ -123,7 +123,7 @@
   var CTX = null;
 
   var CFG_KEY = "prboard.cfg", LAST_KEY = "prboard.last", BIND_KEY = "prboard.sessions";
-  var DEFAULTS = { repos: [], user: "", workspace: "", workspaces: {}, autoprompt: true, inactiveDays: 30, interval: 5, sort: { waiting_me: "new", waiting_author: "new" } };
+  var DEFAULTS = { repos: [], user: "", workspaces: {}, autoprompt: true, inactiveDays: 30, interval: 5, sort: { waiting_me: "new", waiting_author: "new" } };
   var COLS = [
     { key: "waiting_me", name: "Waiting on me", color: "#60a5fa" },
     { key: "waiting_author", name: "Waiting on author", color: "#fbbf24" },
@@ -173,8 +173,14 @@
     if (c.repo && /^[^/\s]+\/[^/\s]+$/.test(c.repo) && c.repos.indexOf(c.repo) < 0) c.repos.push(c.repo);
     delete c.repo;
     if (!c.sort) c.sort = { waiting_me: "new", waiting_author: "new" };
-    if (typeof c.workspace !== "string") c.workspace = "";
     if (!c.workspaces || typeof c.workspaces !== "object" || Array.isArray(c.workspaces)) c.workspaces = {};
+    // One-time migration from the old global default: seed every configured
+    // repo without its own entry, then the default ceases to exist. Repos are
+    // meant to each carry an explicit workspace; unset ones open GitHub.
+    if (typeof c.workspace === "string" && c.workspace) {
+      c.repos.forEach(function (r) { if (!c.workspaces[r]) c.workspaces[r] = c.workspace; });
+    }
+    delete c.workspace;
     if (typeof c.autoprompt !== "boolean") c.autoprompt = true;
     if (typeof c.inactiveDays !== "number" || !isFinite(c.inactiveDays) || c.inactiveDays < 0 || c.inactiveDays > 365) c.inactiveDays = 30;
     return c;
@@ -190,7 +196,7 @@
   // every device hitting this web UI shares them. The poll interval stays
   // per-browser. saveCfg pushes; pullCfg adopts host changes unless this
   // browser edited something in the last two minutes (anti ping-pong).
-  var SYNC_KEYS = ["repos", "user", "workspace", "workspaces", "autoprompt", "inactiveDays"];
+  var SYNC_KEYS = ["repos", "user", "workspaces", "autoprompt", "inactiveDays"];
   var cfgDirtyAt = 0;
   var adopting = false;
 
@@ -433,10 +439,10 @@
     }
   }
 
-  // Where this repo's review sessions open: per-repo override, then the
-  // global default, then nowhere (cards open GitHub).
+  // Where this repo's review sessions open: an explicit per-repo workspace,
+  // or nowhere (cards open GitHub). There is deliberately no global default.
   function workspaceFor(repo) {
-    return (cfg.workspaces && cfg.workspaces[repo]) || cfg.workspace || "";
+    return (cfg.workspaces && cfg.workspaces[repo]) || "";
   }
 
   function createReviewSession(card, key, tag) {
@@ -792,31 +798,29 @@
     if (user === null) return;
     cfg.user = user.trim();
     saveCfg();
-    // Per-repo review workspaces: pick a target repo (or the default), then a
-    // workspace for it. Blank keeps current values.
+    // Per-repo review workspaces: pick a repo, then a workspace for it.
+    // No global default on purpose — every repo carries an explicit choice.
     var opts = workspaceOptions();
     var labelOf = function (id) {
-      if (!id) return "(default)";
+      if (!id) return "(not set — cards open GitHub)";
       for (var j = 0; j < opts.length; j++) if (opts[j].id === id) return opts[j].label;
       return id;
     };
     var repoLines = cfg.repos.map(function (r, idx) {
-      return (idx + 1) + ") " + displayName(r) + " → " + labelOf(cfg.workspaces[r] || cfg.workspace);
+      return (idx + 1) + ") " + displayName(r) + " → " + labelOf(cfg.workspaces[r]);
     }).join("\n");
     var target = prompt(
       "Review workspaces — where each repo's review sessions open:\n" +
       (repoLines || "(no repos)") + "\n" +
-      "d) default for repos without their own → " + (cfg.workspace ? labelOf(cfg.workspace) : "(none — cards open GitHub)") + "\n" +
-      "Set which? (a repo number, or 'd'; blank = keep)",
+      "Set which? (a repo number; blank = keep)",
       ""
     );
     if (target !== null && target.trim() !== "") {
-      target = target.trim().toLowerCase();
-      var isDefault = target === "d" || target === "default";
+      target = target.trim();
       var repoIdx = /^\d+$/.test(target) ? Number(target) - 1 : -1;
-      if (isDefault || (repoIdx >= 0 && repoIdx < cfg.repos.length)) {
-        var targetName = isDefault ? "the default" : displayName(cfg.repos[repoIdx]);
-        var curId = isDefault ? cfg.workspace : (cfg.workspaces[cfg.repos[repoIdx]] || cfg.workspace);
+      if (repoIdx >= 0 && repoIdx < cfg.repos.length) {
+        var targetName = displayName(cfg.repos[repoIdx]);
+        var curId = cfg.workspaces[cfg.repos[repoIdx]] || "";
         var cur = "";
         for (var k = 0; k < opts.length; k++) if (opts[k].id === curId) cur = String(opts[k].n);
         var pick = prompt(
@@ -835,8 +839,7 @@
             id = byId ? byId.id : "";
             if (pick && !byId) toast("No workspace matched \"" + pick + "\" — cleared");
           }
-          if (isDefault) cfg.workspace = id;
-          else if (id) cfg.workspaces[cfg.repos[repoIdx]] = id;
+          if (id) cfg.workspaces[cfg.repos[repoIdx]] = id;
           else delete cfg.workspaces[cfg.repos[repoIdx]];
           saveCfg();
         }
