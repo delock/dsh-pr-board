@@ -284,13 +284,30 @@
   // cannot be trusted to contain "#N", so the shared map is what makes the
   // first click on a new device resolve exactly.
   var hostBindings = {}; // repo#N -> {sid, t}, refreshed from the host
+  var hostBindingsLoaded = false; // false until the first successful GET
+
+  // Re-key any mixed-case entries to lowercase, merging collisions by newest
+  // timestamp — legacy local/host data predates the lowercase rule.
+  function normalizeBindings(map) {
+    var out = {};
+    for (var k in map) {
+      if (!map[k] || !map[k].sid) continue;
+      var lk = String(k).toLowerCase();
+      if (!out[lk] || (map[k].t || 0) >= (out[lk].t || 0)) out[lk] = map[k];
+    }
+    return out;
+  }
 
   function loadBindings() {
-    try { var b = JSON.parse(localStorage.getItem(BIND_KEY) || "{}"); return b && typeof b === "object" ? b : {}; }
-    catch (e) { return {}; }
+    try {
+      var b = JSON.parse(localStorage.getItem(BIND_KEY) || "{}");
+      var n = normalizeBindings(b && typeof b === "object" ? b : {});
+      return n;
+    } catch (e) { return {}; }
   }
   function saveBindings(b) { try { localStorage.setItem(BIND_KEY, JSON.stringify(b)); } catch (e) {} }
   function bindSession(key, sid) {
+    key = String(key).toLowerCase();
     var b = loadBindings();
     // One session belongs to at most one PR: if this session was previously
     // bound to another PR (blank-session reuse), release the old claim.
@@ -307,11 +324,24 @@
     return released;
   }
   function boundSession(key) {
+    key = String(key).toLowerCase();
     var b = loadBindings();
     var e = b[key];
+    // Once the shared map is loaded it is the truth: a DIFFERING host entry
+    // (a newer binding from any device — e.g. the other browser re-bound this
+    // PR after archiving a duplicate) replaces the local cache instead of
+    // each browser forever opening its own stale session.
+    if (hostBindingsLoaded) {
+      var shared = hostBindings[key];
+      if (shared && shared.sid && (!e || e.sid !== shared.sid)) {
+        b[key] = shared;
+        saveBindings(b);
+        e = shared;
+      }
+    }
     if (!e || !e.sid) {
-      // Fall through to the host-shared map (another device's click), and
-      // write a hit through to localStorage so this lookup stays instant.
+      // No local entry: fall through to the host-shared map (another device's
+      // click), and write a hit through to localStorage so it stays instant.
       var h = hostBindings[key];
       if (h && h.sid) {
         b[key] = { sid: h.sid, t: h.t || Date.now() };
@@ -351,7 +381,8 @@
   function pullBindings() {
     api("/api/pr-board/bindings").then(function (v) {
       if (!v || !v.ok || !v.bindings) return;
-      hostBindings = v.bindings;
+      hostBindings = normalizeBindings(v.bindings);
+      hostBindingsLoaded = true;
       var b = loadBindings();
       var dirty = false;
       for (var k in b) {
@@ -517,7 +548,10 @@
   // ---------- click-to-session: find / open / create the review conversation ----------
   // Full key for the binding table; short tag ("repo#N") doubles as the title
   // search needle — after the first message the LLM-generated title contains it.
-  function sessionKey(card) { return (card.repo || currentRepo()) + "#" + card.number; }
+  // Binding keys are LOWERCASED: repo identifiers arrive in mixed casing
+  // across devices ("DeepSpeed" vs "deepspeed"), and case-sensitive keys
+  // silently split one PR into two bindings pointing at two sessions.
+  function sessionKey(card) { return ((card.repo || currentRepo()) + "#" + card.number).toLowerCase(); }
   function sessionTag(card) { return shortName(card.repo || currentRepo()) + "#" + card.number; }
 
   // Wire errors carry {code, message?, details?} — message is often absent,

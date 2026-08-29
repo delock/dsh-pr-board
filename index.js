@@ -684,9 +684,11 @@ async function readHostBindings() {
     const out = {};
     if (raw && typeof raw === "object") {
       for (const [key, entry] of Object.entries(raw)) {
-        if (validBindingKey(key) && entry && typeof entry.sid === "string" && entry.sid.length <= 120) {
-          out[key] = { sid: entry.sid, t: Number(entry.t) || 0 };
-        }
+        if (!validBindingKey(key) || !entry || typeof entry.sid !== "string" || entry.sid.length > 120) continue;
+        // Keys are canonicalized to lowercase: repo casing varies across
+        // devices and case-sensitive keys split one PR into two bindings.
+        const lk = key.toLowerCase();
+        if (!out[lk] || (Number(entry.t) || 0) >= (out[lk].t || 0)) out[lk] = { sid: entry.sid, t: Number(entry.t) || 0 };
       }
     }
     return out;
@@ -703,6 +705,7 @@ async function writeHostBindings(map) {
 // key still pointing at the same session (a session belongs to one PR).
 async function mergeHostBinding(key, sid, release) {
   const map = await readHostBindings();
+  key = String(key).toLowerCase();
   map[key] = { sid, t: Date.now() };
   if (release) {
     for (const k of Object.keys(map)) {
@@ -764,7 +767,7 @@ export function apply(ctx) {
             try {
               if (sid === "") {
                 const map = await readHostBindings();
-                delete map[key];
+                delete map[String(key).toLowerCase()];
                 await writeHostBindings(map);
               } else {
                 await mergeHostBinding(key, sid, body.release === true);
