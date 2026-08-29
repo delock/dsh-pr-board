@@ -756,11 +756,19 @@ export function apply(ctx) {
           readBody(req).then(async (body) => {
             const key = body && body.key;
             const sid = body && body.sid;
-            if (!validBindingKey(key) || typeof sid !== "string" || !sid || sid.length > 120) {
+            // sid === "" is a DELETE: the bound session is gone or archived
+            // and the stale entry must not haunt every other browser.
+            if (!validBindingKey(key) || typeof sid !== "string" || sid.length > 120) {
               return json(res, 400, { ok: false, error: "invalid binding" });
             }
             try {
-              await mergeHostBinding(key, sid, body.release === true);
+              if (sid === "") {
+                const map = await readHostBindings();
+                delete map[key];
+                await writeHostBindings(map);
+              } else {
+                await mergeHostBinding(key, sid, body.release === true);
+              }
               json(res, 200, { ok: true });
             } catch (e) {
               json(res, 500, { ok: false, error: "binding write failed: " + String((e && e.message) || e) });

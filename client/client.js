@@ -323,7 +323,26 @@
     // Validate against the live list; a deleted/archived session re-binds.
     var snap = null;
     try { snap = CTX && CTX.sessions && CTX.sessions.list.getSnapshot(); } catch (x) {}
-    if (snap && snap.byId && !(e.sid in snap.byId)) { delete b[key]; saveBindings(b); return null; }
+    // Archived counts as gone: archived sessions stay in the list snapshot
+    // (flagged via the workspaces snapshot), and without this check a click
+    // would drop you into the archived conversation instead of re-binding.
+    var archived = [];
+    try {
+      var wsSnap = CTX.workspaces && CTX.workspaces.list && CTX.workspaces.list.getSnapshot();
+      archived = (wsSnap && wsSnap.archivedSessionIds) || [];
+    } catch (x) {}
+    if ((snap && snap.byId && !(e.sid in snap.byId)) || archived.indexOf(e.sid) >= 0) {
+      delete b[key];
+      saveBindings(b);
+      delete hostBindings[key];
+      // Clear the shared map too, or every browser re-hits the stale entry.
+      api("/api/pr-board/bindings", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ key: key, sid: "" })
+      }).catch(function () {});
+      return null;
+    }
     return e.sid;
   }
 
