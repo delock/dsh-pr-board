@@ -70,6 +70,18 @@ async function ghSearch(repo, qualifiers, extraArgs) {
   }
 }
 
+// Repo-less PR search (the "mine" view spans every repo I authored in).
+async function ghSearchAllPrs(qualifiers, extraArgs) {
+  const args = ["search", "prs", ...qualifiers, ...extraArgs, "--json", SEARCH_FIELDS];
+  const r = await gh(args);
+  if (!r.ok) throw new Error(ghError(r));
+  try {
+    return JSON.parse(r.stdout);
+  } catch (e) {
+    throw new Error("failed to parse gh search output");
+  }
+}
+
 // Issue search: `gh search issues` also returns PRs unless `is:issue` pins it.
 async function ghSearchIssues(repo, qualifiers, extraArgs) {
   const args = ["search", "issues", "--repo", repo, "is:issue", ...qualifiers, ...extraArgs, "--json", ISSUE_SEARCH_FIELDS];
@@ -259,6 +271,69 @@ function classifyIssue(d, me, assignedSet, mentionedSet) {
   return "other"; // commented-only thread with nothing new — not shown
 }
 
+// State machine for PRs I AUTHORED (the developer half of the board). The
+// turnstile mirrors the maintainer view: a reviewer's change request, a red
+// CI, conflicts or an unanswered reviewer comment are MY move; everything
+// else — crickets, re-review, approved-awaiting-merge, queue, auto-merge —
+// waits on others. The queue/auto-merge gates are the MAINTAINER's side, so
+// they land in waiting_others even when blocked on a human.
+function classifyMine(d, me) {
+  const reviews = (d.reviews && d.reviews.nodes) || [];
+  const comments = (d.comments && d.comments.nodes) || [];
+  const lastCommitNode = d.commits && d.commits.nodes && d.commits.nodes[0] && d.commits.nodes[0].commit;
+  const lastCommitTs = ts(lastCommitNode && lastCommitNode.committedDate);
+  const ci = (lastCommitNode && lastCommitNode.statusCheckRollup && lastCommitNode.statusCheckRollup.state) || "";
+
+  let myLast = lastCommitTs; // pushes are my actions
+  let othersLast = 0;
+  let changeRequestedAfterMyMove = false;
+  let anyReview = false;
+  for (const rv of reviews) {
+    const who = rv.author && rv.author.login;
+    const at = ts(rv.submittedAt);
+    if (who === me) {
+      myLast = Math.max(myLast, at);
+    } else if (!isBot(who)) {
+      anyReview = true;
+      othersLast = Math.max(othersLast, at);
+      if (rv.state === "CHANGES_REQUESTED" && at > myLast) changeRequestedAfterMyMove = true;
+    }
+    for (const rc of (rv.comments && rv.comments.nodes) || []) {
+      const rca = (rc.author && rc.author.login) || "";
+      const rcat = ts(rc.createdAt);
+      if (rca === me) myLast = Math.max(myLast, rcat);
+      else if (!isBot(rca)) othersLast = Math.max(othersLast, rcat);
+    }
+  }
+  for (const c of comments) {
+    const who = c.author && c.author.login;
+    const at = ts(c.createdAt);
+    if (who === me) myLast = Math.max(myLast, at);
+    else if (!isBot(who)) othersLast = Math.max(othersLast, at);
+  }
+
+  if (d.isInMergeQueue) {
+    if (ci === "FAILURE" || ci === "ERROR") return { state: "waiting_me", reason: "ci-failing", whenTs: othersLast || lastCommitTs };
+    return { state: "waiting_others", reason: "merge-queue", whenTs: lastCommitTs };
+  }
+  if (d.autoMergeRequest && d.autoMergeRequest.enabledAt) {
+    const mss = d.mergeStateStatus;
+    if (ci === "FAILURE" || ci === "ERROR" || mss === "BLOCKED" || mss === "BEHIND" || mss === "DIRTY") {
+      return { state: "waiting_me", reason: "auto-merge-blocked", whenTs: othersLast || lastCommitTs };
+    }
+    return { state: "waiting_others", reason: "auto-merge", whenTs: lastCommitTs };
+  }
+  if (changeRequestedAfterMyMove || d.reviewDecision === "CHANGES_REQUESTED") {
+    return { state: "waiting_me", reason: "changes-requested", whenTs: othersLast || lastCommitTs };
+  }
+  if (ci === "FAILURE" || ci === "ERROR") return { state: "waiting_me", reason: "ci-failing", whenTs: lastCommitTs };
+  if (d.mergeable === "CONFLICTING") return { state: "waiting_me", reason: "conflict", whenTs: lastCommitTs };
+  if (othersLast > myLast) return { state: "waiting_me", reason: "respond", whenTs: othersLast };
+  if (d.reviewDecision === "APPROVED") return { state: "waiting_others", reason: "approved", whenTs: othersLast || lastCommitTs };
+  if (!anyReview) return { state: "waiting_others", reason: "awaiting-first-review", whenTs: d.createdAt ? ts(d.createdAt) : lastCommitTs };
+  return { state: "waiting_others", reason: "re-review", whenTs: myLast };
+}
+
 function card(pr, verdict, extra) {
   // CI rollup rides the last-commit lookup (single field, same batched query);
   // search-API cards (inbox/merged) simply carry no ci.
@@ -429,18 +504,98 @@ async function boardData(repo, me, fresh, days) {
 async function boardDataMulti(repos, me, fresh, days) {
   // One collect() per repo, each cached independently; a repo that fails
   // degrades to its own error entry instead of sinking the whole response.
-  const out = await Promise.all(
-    repos.map(async (repo) => {
+  // The "mine" view (PRs I authored, every repo) rides along, cached apart.
+  const [out, mine] = await Promise.all([
+    Promise.all(
+      repos.map(async (repo) => {
+        try {
+          const d = await boardData(repo, me, fresh, days);
+          if (!d.ok) return { repo, ok: false, error: d.error };
+          return { repo, ok: true, counts: d.counts, columns: d.columns, issueCounts: d.issueCounts, issueColumns: d.issueColumns };
+        } catch (e) {
+          return { repo, ok: false, error: String((e && e.message) || e) };
+        }
+      })
+    ),
+    boardDataMine(me, fresh, days),
+  ]);
+  return { ok: true, user: me, generatedAt: new Date().toISOString(), repos: out, mine };
+}
+
+// "owner/name" out of a PR url — the global author search spans repos, so the
+// board's repo identity comes from each result itself.
+function repoFromUrl(url) {
+  const m = /^https?:\/\/[^/]+\/([^/]+)\/([^/]+)\/pull\//.exec(url || "");
+  return m ? m[1] + "/" + m[2] : "";
+}
+
+async function collectMine(me, days) {
+  const open = ["--state", "open"];
+  const [mineOpen, mineRecent] = await Promise.all([
+    ghSearchAllPrs([`author:${me}`], [...open, "--limit", "50"]),
+    ghSearchAllPrs([`author:${me}`], ["--sort", "updated", "--limit", "30"]),
+  ]);
+
+  const daysN = Number(days);
+  const cutoff = Number.isFinite(daysN) && daysN > 0 ? Date.now() - daysN * 86400 * 1000 : 0;
+  const active = (iso) => !cutoff || ts(iso) >= cutoff;
+
+  // Group open PRs by repo for the batched per-repo detail fetches.
+  const byRepo = new Map();
+  for (const p of mineOpen) {
+    const repo = repoFromUrl(p.url);
+    if (!repo) continue;
+    if (!byRepo.has(repo)) byRepo.set(repo, []);
+    byRepo.get(repo).push(p.number);
+  }
+  const detailLists = await Promise.all(
+    [...byRepo.entries()].map(async ([repo, numbers]) => {
+      const [owner, name] = repo.split("/");
       try {
-        const d = await boardData(repo, me, fresh, days);
-        if (!d.ok) return { repo, ok: false, error: d.error };
-        return { repo, ok: true, counts: d.counts, columns: d.columns, issueCounts: d.issueCounts, issueColumns: d.issueColumns };
+        return (await ghAliasedDetails(owner, name, numbers, "pullRequest", DETAIL_FIELDS)).map((d) => ({ ...d, repo }));
       } catch (e) {
-        return { repo, ok: false, error: String((e && e.message) || e) };
+        return []; // one repo's details failing must not sink the whole view
       }
     })
   );
-  return { ok: true, user: me, generatedAt: new Date().toISOString(), repos: out };
+
+  const cols = { waiting_me: [], waiting_others: [] };
+  for (const d of detailLists.flat()) {
+    if (d.state !== "OPEN" || !active(d.updatedAt)) continue;
+    const verdict = classifyMine(d, me);
+    const when = verdict.whenTs ? new Date(verdict.whenTs).toISOString() : "";
+    const c = card(d, { state: verdict.state, reason: verdict.reason }, { when, whenTs: verdict.whenTs || 0 });
+    c.repo = d.repo;
+    cols[verdict.state].push(c);
+  }
+  const CLOSED_WINDOW_MS = 14 * 86400 * 1000;
+  const merged = mineRecent
+    .filter((p) => p.state === "merged" && Date.now() - ts(p.closedAt) < CLOSED_WINDOW_MS && active(p.closedAt))
+    .sort((a, b) => ts(b.closedAt) - ts(a.closedAt))
+    .slice(0, 8)
+    .map((p) => {
+      const c = card(p, { state: "merged", reason: "" }, { when: p.closedAt, whenTs: ts(p.closedAt) });
+      c.repo = repoFromUrl(p.url);
+      return c;
+    });
+
+  cols.waiting_me.sort((a, b) => b.whenTs - a.whenTs);
+  cols.waiting_others.sort((a, b) => b.whenTs - a.whenTs);
+  return {
+    ok: true,
+    counts: { waiting_me: cols.waiting_me.length, waiting_others: cols.waiting_others.length, merged: merged.length },
+    columns: { ...cols, merged },
+  };
+}
+
+async function boardDataMine(me, fresh, days) {
+  const key = "mine#" + me + "#" + (days || 0);
+  const hit = cache.get(key);
+  const minAge = fresh ? 8000 : TTL_MS;
+  if (hit && Date.now() - hit.at < minAge) return hit.promise;
+  const promise = collectMine(me, days).catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
+  cache.set(key, { at: Date.now(), promise });
+  return promise;
 }
 
 // Resolved-username cache: with a blank configured username every /data call
