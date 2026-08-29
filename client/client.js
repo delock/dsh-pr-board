@@ -159,8 +159,27 @@
     "replied": "Reporter replied",
     "awaiting-reporter": "Awaiting reporter"
   };
+  // "Mine" board: PRs I authored across every repo — the developer half.
+  var MINE_COLS = [
+    { key: "waiting_me", name: "My move", color: "#60a5fa" },
+    { key: "waiting_others", name: "Waiting on others", color: "#fbbf24" },
+    { key: "merged", name: "Merged", color: "#94a3b8" }
+  ];
+  var MINE_REASONS = {
+    "changes-requested": "Changes requested",
+    "ci-failing": "CI failing",
+    "conflict": "Conflicts",
+    "respond": "Reviewer commented — awaiting your reply",
+    "auto-merge-blocked": "Auto-merge blocked (fix checks/branch)",
+    "awaiting-first-review": "Awaiting first review",
+    "re-review": "Awaiting re-review",
+    "approved": "Approved — awaiting merge",
+    "merge-queue": "In merge queue",
+    "auto-merge": "Auto-merge armed",
+    "in-review": "In review"
+  };
   var cfg = loadCfg(), pollTimer = null, data = null, busy = false, activeRepo = "";
-  var boardMode = "pr"; // "pr" | "issue" — which panel the board shows
+  var boardMode = "pr"; // "pr" | "issue" | "mine" — which panel the board shows
   var currentCards = {}; // number -> card object (for the click-to-session flow)
   var jumpBusy = false;
 
@@ -278,8 +297,47 @@
     return e.sid;
   }
 
-  // "owner/name" -> "name" for display; falls back to the full id when two
-  // monitored repos share a short name.
+  // Developer-side transitions on MY PRs: approved, changes requested, queued
+  // or merged. Baseline lives apart from the maintainer one; first load just
+  // records the current state (no toast storm).
+  var MINE_LAST_KEY = "prboard.minelast";
+  function detectMineTransitions(v) {
+    var mine = v && v.mine;
+    if (!mine || !mine.ok) return;
+    var prev = null;
+    try { prev = JSON.parse(localStorage.getItem(MINE_LAST_KEY) || "null"); } catch (e) {}
+    var prevMap = prev && typeof prev === "object" ? prev : {};
+    var next = {};
+    var cols = mine.columns || {};
+    (cols.waiting_me || []).concat(cols.waiting_others || []).forEach(function (c) {
+      next[(c.repo || "") + "#" + c.number] = c.reason || "";
+    });
+    var mergedNow = {};
+    (cols.merged || []).forEach(function (c) { mergedNow[(c.repo || "") + "#" + c.number] = 1; });
+
+    for (var k in next) {
+      var was = prevMap[k];
+      if (was === undefined) continue; // first baseline
+      var now = next[k];
+      var m = /^([^#]+)#(\d+)$/.exec(k);
+      var where = m ? shortName(m[1]) + " #" + m[2] : k;
+      if (now === "changes-requested" && was !== "changes-requested") toast("Your PR " + where + ": changes requested");
+      else if (now === "approved" && was !== "approved") toast("Your PR " + where + " got approved 🎉");
+      else if (now === "merge-queue" && was !== "merge-queue") toast("Your PR " + where + " entered the merge queue");
+    }
+    for (var mk in mergedNow) {
+      if (prevMap[mk] !== undefined && prevMap[mk] !== "merged") {
+        var mm = /^([^#]+)#(\d+)$/.exec(mk);
+        toast("Your PR " + (mm ? shortName(mm[1]) + " #" + mm[2] : mk) + " was merged 🎉");
+      }
+    }
+    // merged entries leave the open map; record them so re-merges don't re-toast
+    var store = Object.assign({}, next);
+    for (var mk2 in mergedNow) store[mk2] = "merged";
+    try { localStorage.setItem(MINE_LAST_KEY, JSON.stringify(store)); } catch (e) {}
+  }
+
+
   function shortName(repo) { return repo.slice(repo.indexOf("/") + 1); }
   function displayName(repo) {
     var n = shortName(repo);
@@ -336,7 +394,7 @@
       data = v;
       renderWidget();
       renderBoard();
-      if (v.ok && !quiet) detectTransitions(v);
+      if (v.ok && !quiet) { detectTransitions(v); detectMineTransitions(v); }
     }).catch(function () { busy = false; });
   }
 
@@ -669,6 +727,8 @@
     if (addEl) { e.stopPropagation(); addRepo(); return; }
     var issEl = e.target.closest && e.target.closest("[data-widget-issues]");
     if (issEl) { openBoard(issEl.getAttribute("data-widget-issues"), "issue"); return; }
+    var mineEl = e.target.closest && e.target.closest("[data-widget-mine]");
+    if (mineEl) { openBoard("", "mine"); return; }
     var repoEl = e.target.closest && e.target.closest("[data-widget-repo]");
     if (repoEl) { openBoard(repoEl.getAttribute("data-widget-repo"), "pr"); return; }
     openBoard();
@@ -725,13 +785,22 @@
         '<span class="pbw-cell author pbw-ic2" data-widget-issues="' + esc(repo) + '" title="Issues waiting on reporter">' + ic.waiting_reporter + "</span>" +
         "</div>";
     });
+    // Global "mine" row: PRs I authored in every repo — my move / their move.
+    var mn = data && data.mine && data.mine.ok ? data.mine.counts : { waiting_me: 0, waiting_others: 0 };
+    html += '<div class="pbw-rblock pbw-mine-row" data-widget-mine="1" title="Pull requests you authored (all repos)">' +
+      '<span class="pbw-name">mine</span><span class="pbw-kind">pr</span>' +
+      '<span class="pbw-cell me" title="My PRs needing my move">' + mn.waiting_me + "</span>" +
+      '<span class="pbw-cell author" title="My PRs waiting on others">' + mn.waiting_others + "</span>" +
+      "</div>";
     row.innerHTML = html;
   }
 
   // ---------- board ----------
   function cardHtml(c, colKey) {
-    var reasons = c.kind === "issue" ? ISS_REASONS : REASONS;
-    var meta = '<div class="pbo-meta"><span>@' + esc(c.author) + "</span>" +
+    var reasons = c.kind === "issue" ? ISS_REASONS : (boardMode === "mine" ? MINE_REASONS : REASONS);
+    var meta = '<div class="pbo-meta">' +
+      (boardMode === "mine" && c.repo ? "<span>" + esc(shortName(c.repo)) + "</span>" : "") +
+      "<span>@" + esc(c.author) + "</span>" +
       (c.when ? "<span>" + esc(timeAgo(c.when)) + "</span>" : "");
     if (colKey !== "merged" && colKey !== "closed_recent" && c.reason && reasons[c.reason]) meta += '<span class="pbo-reason">' + esc(reasons[c.reason]) + '</span>';
     if (c.kind !== "issue") {
@@ -747,7 +816,7 @@
       ? '<button class="pbo-claim" data-claim="' + c.number + '">I&#39;ll review</button>' : "";
     // Two click zones: the #number anchor goes to GitHub (middle-click and
     // copy-link work natively), the rest of the card jumps into the session.
-    return '<div class="pbo-card" data-num="' + c.number + '" data-url="' + esc(c.url) + '">' +
+    return '<div class="pbo-card" data-num="' + c.number + '" data-repo="' + esc(c.repo || "") + '" data-url="' + esc(c.url) + '">' +
       '<button class="pbo-gh" data-gh="' + esc(c.url) + '" title="Open on GitHub">↗</button>' +
       '<div class="pbo-title-line"><a class="pbo-num" data-gh="' + esc(c.url) + '" href="' + esc(c.url) + '" target="_blank" rel="noopener" title="Open #' + c.number + ' on GitHub">#' + c.number + "</a>" + esc(c.title) + "</div>" + meta + claim + "</div>";
   }
@@ -773,21 +842,31 @@
     if (!data.ok) { body.innerHTML = '<div class="pbo-error">' + esc(data.error || "load failed") + "</div>"; return; }
     var repo = currentRepo();
     var rd = repoData(repo);
+    var mineMode = boardMode === "mine";
     var issueMode = boardMode === "issue";
-    var colsDef = issueMode ? ISS_COLS : COLS;
-    var columnsSrc = issueMode ? (rd && rd.issueColumns) : (rd && rd.columns);
+    var colsDef = mineMode ? MINE_COLS : (issueMode ? ISS_COLS : COLS);
+    var columnsSrc = mineMode ? (data.mine && data.mine.ok && data.mine.columns) : (issueMode ? (rd && rd.issueColumns) : (rd && rd.columns));
     var modeBtn = document.getElementById("pbo-mode");
-    if (modeBtn) modeBtn.textContent = issueMode ? "→ Pull requests" : "→ Issues";
+    if (modeBtn) modeBtn.textContent = mineMode ? "→ Pull requests" : (issueMode ? "→ Mine" : "→ Issues");
     var sub = document.getElementById("pbo-sub");
-    if (sub) sub.textContent = repo + (issueMode ? " · issues" : " · pull requests") + " · @" + data.user + " · updated " + timeAgo(data.generatedAt);
-    if (!rd) { body.innerHTML = '<div class="pbo-loading">Loading…</div>'; return; }
-    if (!rd.ok) { body.innerHTML = '<div class="pbo-error">' + esc(repo) + ": " + esc(rd.error || "load failed") + "</div>"; return; }
+    if (sub) sub.textContent = (mineMode ? "my pull requests" : repo + (issueMode ? " · issues" : " · pull requests")) + " · @" + data.user + " · updated " + timeAgo(data.generatedAt);
+    if (mineMode) {
+      if (!data.mine) { body.innerHTML = '<div class="pbo-loading">Loading…</div>'; return; }
+      if (!data.mine.ok) { body.innerHTML = '<div class="pbo-error">mine: ' + esc(data.mine.error || "load failed") + "</div>"; return; }
+    } else {
+      if (!rd) { body.innerHTML = '<div class="pbo-loading">Loading…</div>'; return; }
+      if (!rd.ok) { body.innerHTML = '<div class="pbo-error">' + esc(repo) + ": " + esc(rd.error || "load failed") + "</div>"; return; }
+    }
     var html = "";
     colsDef.forEach(function (col) {
       var list = (columnsSrc && columnsSrc[col.key]) || [];
-      list.forEach(function (c) { c.repo = repo; c.kind = issueMode ? "issue" : "pr"; currentCards[c.number] = c; });
+      list.forEach(function (c) {
+        if (!mineMode) c.repo = repo;
+        c.kind = mineMode || !issueMode ? "pr" : "issue";
+        currentCards[(c.repo || "") + "#" + c.number] = c;
+      });
       // First two columns support client-side sort toggling (new→old / old→new); others stay new→old
-      var sortable = col.key === "waiting_me" || col.key === "waiting_author" || col.key === "waiting_reporter";
+      var sortable = col.key === "waiting_me" || col.key === "waiting_author" || col.key === "waiting_reporter" || col.key === "waiting_others";
       var dir = (cfg.sort && cfg.sort[col.key]) || "new";
       if (sortable) {
         list = list.slice().sort(function (a, b) {
@@ -918,7 +997,7 @@
     var ov = ensureBoard();
     ov.classList.add("pb-show");
     if (repo && cfg.repos.indexOf(repo) >= 0) activeRepo = repo;
-    if (mode === "issue" || mode === "pr") boardMode = mode;
+    if (mode === "issue" || mode === "pr" || mode === "mine") boardMode = mode;
     if (!cfg.repos.length) { addRepo(); return; } // first run: guide straight into setup
     refresh(false, true);
   }
@@ -961,7 +1040,7 @@
       var tabAddEl = e.target.closest && e.target.closest("[data-tab-add]");
       if (tabAddEl) { e.stopPropagation(); addRepo(); return; }
       var tabEl = e.target.closest && e.target.closest("[data-tab]");
-      if (tabEl) { activeRepo = tabEl.getAttribute("data-tab"); renderBoard(); return; }
+      if (tabEl) { activeRepo = tabEl.getAttribute("data-tab"); boardMode = "pr"; renderBoard(); return; }
       var sortEl = e.target.closest && e.target.closest("[data-sort]");
       if (sortEl) {
         var sortKey = sortEl.getAttribute("data-sort");
@@ -991,7 +1070,7 @@
       var cardEl = e.target.closest && e.target.closest(".pbo-card");
       if (cardEl) {
         var cn = parseInt(cardEl.getAttribute("data-num"), 10);
-        var cardObj = currentCards[cn];
+        var cardObj = currentCards[(cardEl.getAttribute("data-repo") || "") + "#" + cn];
         if (cardObj) openReviewSession(cardObj);
         else if (cardEl.dataset && cardEl.dataset.url) window.open(cardEl.dataset.url, "_blank");
       }
@@ -1000,7 +1079,7 @@
     document.getElementById("pbo-refresh").onclick = function () { refresh(true, true); };
     document.getElementById("pbo-cfg").onclick = openSettings;
     document.getElementById("pbo-mode").onclick = function () {
-      boardMode = boardMode === "issue" ? "pr" : "issue";
+      boardMode = boardMode === "pr" ? "issue" : (boardMode === "issue" ? "mine" : "pr");
       renderBoard();
     };
     document.getElementById("pbo-days").onchange = function () {
