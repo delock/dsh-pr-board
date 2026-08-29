@@ -278,10 +278,13 @@
   }
 
   // ---------- PR ↔ session bindings ----------
-  // Exact, immediate association ("owner/repo#N" -> sessionId). Session titles
-  // only materialize after the first message (LLM-generated), so titles alone
-  // can never match a freshly created review session — the binding table is
-  // the primary lookup, title search the cross-browser fallback.
+  // Exact, immediate association ("owner/repo#N" -> sessionId). Two layers:
+  // localStorage (instant, per-browser) and a HOST-SHARED map (merge-style,
+  // read at init/poll, written on every bind) — LLM titles are semantic and
+  // cannot be trusted to contain "#N", so the shared map is what makes the
+  // first click on a new device resolve exactly.
+  var hostBindings = {}; // repo#N -> {sid, t}, refreshed from the host
+
   function loadBindings() {
     try { var b = JSON.parse(localStorage.getItem(BIND_KEY) || "{}"); return b && typeof b === "object" ? b : {}; }
     catch (e) { return {}; }
@@ -291,19 +294,60 @@
     var b = loadBindings();
     // One session belongs to at most one PR: if this session was previously
     // bound to another PR (blank-session reuse), release the old claim.
-    for (var k in b) if (b[k] && b[k].sid === sid && k !== key) delete b[k];
+    var released = false;
+    for (var k in b) if (b[k] && b[k].sid === sid && k !== key) { delete b[k]; released = true; }
     b[key] = { sid: sid, t: Date.now() };
     saveBindings(b);
+    hostBindings[key] = { sid: sid, t: Date.now() };
+    api("/api/pr-board/bindings", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ key: key, sid: sid, release: true })
+    }).catch(function () {});
+    return released;
   }
   function boundSession(key) {
     var b = loadBindings();
     var e = b[key];
+    if (!e || !e.sid) {
+      // Fall through to the host-shared map (another device's click), and
+      // write a hit through to localStorage so this lookup stays instant.
+      var h = hostBindings[key];
+      if (h && h.sid) {
+        b[key] = { sid: h.sid, t: h.t || Date.now() };
+        saveBindings(b);
+        e = b[key];
+      }
+    }
     if (!e || !e.sid) return null;
     // Validate against the live list; a deleted/archived session re-binds.
     var snap = null;
     try { snap = CTX && CTX.sessions && CTX.sessions.list.getSnapshot(); } catch (x) {}
     if (snap && snap.byId && !(e.sid in snap.byId)) { delete b[key]; saveBindings(b); return null; }
     return e.sid;
+  }
+
+  // Pull the shared map; also uploads any local-only binding exactly once
+  // (migrating browsers that clicked before the map was host-shared).
+  function pullBindings() {
+    api("/api/pr-board/bindings").then(function (v) {
+      if (!v || !v.ok || !v.bindings) return;
+      hostBindings = v.bindings;
+      var b = loadBindings();
+      var dirty = false;
+      for (var k in b) {
+        if (!hostBindings[k] && b[k] && b[k].sid) {
+          api("/api/pr-board/bindings", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ key: k, sid: b[k].sid })
+          }).catch(function () {});
+          hostBindings[k] = b[k];
+          dirty = true;
+        }
+      }
+      if (dirty) saveBindings(b); // no-op write; keeps shape stable
+    }).catch(function () {});
   }
 
   // Developer-side transitions on MY PRs: approved, changes requested, queued
@@ -1205,6 +1249,7 @@
     if (pollTimer) clearInterval(pollTimer);
     pollTimer = setInterval(function () {
       pullCfg(); // converge on config edited from another device
+      pullBindings();
       refresh(false, false);
     }, (cfg.interval || 5) * 60000);
   }
@@ -1246,6 +1291,7 @@
         watchForSidebar();
         restartPolling();
         pullCfg();
+        pullBindings();
         refresh(false, true);
         return;
       }
@@ -1255,6 +1301,7 @@
     mountInSidebar(sidebar);
     restartPolling();
     pullCfg();
+    pullBindings();
     refresh(false, true);
   }
 

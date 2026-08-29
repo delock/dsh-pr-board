@@ -665,6 +665,60 @@ async function writeHostCfg(cfg) {
   await writeFile(HOST_CFG_FILE, JSON.stringify(cfg, null, 2) + "\n", "utf8");
 }
 
+// ---------------------------------------------------------------- host: global PR→session bindings
+// Separate file and merge-style endpoints (never whole-object replace): a
+// binding is written the moment a card click creates/adopts a session, and
+// every browser reads the shared map so the FIRST click on a new device
+// resolves exactly instead of betting on LLM titles containing "#N".
+
+const HOST_BIND_FILE = join(homedir(), ".dsh", "pr-board.bindings.json");
+const BINDINGS_CAP = 500;
+
+function validBindingKey(key) {
+  return typeof key === "string" && /^[^/\s]+\/[^/\s]+#\d+$/.test(key) && key.length <= 160;
+}
+
+async function readHostBindings() {
+  try {
+    const raw = JSON.parse(await readFile(HOST_BIND_FILE, "utf8"));
+    const out = {};
+    if (raw && typeof raw === "object") {
+      for (const [key, entry] of Object.entries(raw)) {
+        if (validBindingKey(key) && entry && typeof entry.sid === "string" && entry.sid.length <= 120) {
+          out[key] = { sid: entry.sid, t: Number(entry.t) || 0 };
+        }
+      }
+    }
+    return out;
+  } catch (e) {
+    return {};
+  }
+}
+
+async function writeHostBindings(map) {
+  await writeFile(HOST_BIND_FILE, JSON.stringify(map, null, 2) + "\n", "utf8");
+}
+
+// Merge one binding (newest wins per key) and optionally release any OTHER
+// key still pointing at the same session (a session belongs to one PR).
+async function mergeHostBinding(key, sid, release) {
+  const map = await readHostBindings();
+  map[key] = { sid, t: Date.now() };
+  if (release) {
+    for (const k of Object.keys(map)) {
+      if (k !== key && map[k].sid === sid) delete map[k];
+    }
+  }
+  // Cap growth: drop the oldest entries beyond the limit.
+  const keys = Object.keys(map);
+  if (keys.length > BINDINGS_CAP) {
+    keys.sort((a, b) => (map[a].t || 0) - (map[b].t || 0));
+    for (const k of keys.slice(0, keys.length - BINDINGS_CAP)) delete map[k];
+  }
+  await writeHostBindings(map);
+  return map;
+}
+
 function queryParam(req, key) {
   try {
     return new URL(req.url || "", "http://localhost").searchParams.get(key) || "";
@@ -690,6 +744,30 @@ function readBody(req) {
 export function apply(ctx) {
   ctx.effect(() => {
     const routes = [
+      {
+        kind: "exact",
+        path: "/api/pr-board/bindings",
+        handler: (req, res) => {
+          if (req.method === "GET") {
+            readHostBindings().then((bindings) => json(res, 200, { ok: true, bindings }), (e) => json(res, 500, { ok: false, error: String((e && e.message) || e) }));
+            return;
+          }
+          if (req.method !== "POST") return json(res, 405, { ok: false, error: "method-not-allowed" });
+          readBody(req).then(async (body) => {
+            const key = body && body.key;
+            const sid = body && body.sid;
+            if (!validBindingKey(key) || typeof sid !== "string" || !sid || sid.length > 120) {
+              return json(res, 400, { ok: false, error: "invalid binding" });
+            }
+            try {
+              await mergeHostBinding(key, sid, body.release === true);
+              json(res, 200, { ok: true });
+            } catch (e) {
+              json(res, 500, { ok: false, error: "binding write failed: " + String((e && e.message) || e) });
+            }
+          });
+        },
+      },
       {
         kind: "exact",
         path: "/api/pr-board/config",
