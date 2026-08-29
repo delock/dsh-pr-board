@@ -113,6 +113,15 @@
 #pr-board-toast{position:fixed;right:16px;bottom:16px;z-index:2147483600;display:flex;flex-direction:column;gap:8px;max-width:340px}
 #pr-board-toast .pbt{padding:9px 13px;border-radius:8px;background:#1f6feb;color:#fff;font-size:12.5px;line-height:1.4;box-shadow:0 4px 14px rgba(0,0,0,.4);cursor:pointer;opacity:.97}
 #pr-board-toast .pbt b{font-weight:700}
+#pr-board-wspick{position:fixed;inset:0;z-index:2147483500;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.5)}
+#pr-board-wspick .pbw-wsbox{min-width:300px;max-width:440px;max-height:70vh;overflow:auto;padding:14px;border-radius:10px;background:#1c2129;color:#d7dde5;box-shadow:0 8px 30px rgba(0,0,0,.5)}
+#pr-board-wspick .pbw-wstitle{font-size:13px;font-weight:700;margin-bottom:10px;color:#fff;word-break:break-all}
+#pr-board-wspick .pbw-wsopt{padding:8px 10px;border-radius:8px;border:1px solid rgba(255,255,255,.12);margin-bottom:6px;cursor:pointer;font-size:12.5px}
+#pr-board-wspick .pbw-wsopt:hover{background:rgba(96,165,250,.18);border-color:rgba(96,165,250,.4)}
+#pr-board-wspick .pbw-wsnew{border-style:dashed;color:#bae6fd}
+#pr-board-wspick .pbw-wsnote{font-size:11.5px;opacity:.6;padding:4px 2px}
+#pr-board-wspick .pbw-wscancel{cursor:pointer;margin-top:6px}
+#pr-board-wspick .pbw-wscancel:hover{opacity:1;text-decoration:underline}
 `;
 
   var name = "pr-board";
@@ -482,6 +491,66 @@
     return null;
   }
 
+  // ---------- workspace picker (click-to-choose, with create) ----------
+  // Shown when a card is clicked for a repo with no configured workspace —
+  // typical for "mine" PRs in repos outside the monitored list. Picking (or
+  // creating) one assigns it, syncs it, and immediately retries the jump.
+  function pickWorkspaceFor(card, repo) {
+    var opts = workspaceOptions();
+    var backdrop = document.createElement("div");
+    backdrop.id = "pr-board-wspick";
+    var rows = opts
+      .map(function (o) { return '<div class="pbw-wsopt" data-wsid="' + esc(o.id) + '">' + esc(o.label) + "</div>"; })
+      .join("");
+    backdrop.innerHTML =
+      '<div class="pbw-wsbox"><div class="pbw-wstitle">Review workspace for ' + esc(repo) + "</div>" +
+      (rows || '<div class="pbw-wsnote">No workspaces yet — create one below.</div>') +
+      (typeof CTX.workspaces.pickDirectory === "function" && typeof CTX.workspaces.create === "function"
+        ? '<div class="pbw-wsopt pbw-wsnew" data-newws="1">＋ New workspace — choose a directory…</div>'
+        : "") +
+      '<div class="pbw-wsnote pbw-wscancel" data-wscancel="1">Cancel — open on GitHub instead</div></div>';
+    document.body.appendChild(backdrop);
+    backdrop.addEventListener("click", function (e) {
+      var cancelEl = e.target.closest && e.target.closest("[data-wscancel]");
+      if (cancelEl || e.target === backdrop) {
+        backdrop.remove();
+        if (cancelEl) window.open(card.url, "_blank");
+        return;
+      }
+      var optEl = e.target.closest && e.target.closest("[data-wsid]");
+      if (optEl) {
+        backdrop.remove();
+        assignWorkspace(repo, optEl.getAttribute("data-wsid"), card);
+        return;
+      }
+      var newEl = e.target.closest && e.target.closest("[data-newws]");
+      if (newEl) {
+        newEl.textContent = "Opening directory picker…";
+        CTX.workspaces.pickDirectory().then(function (path) {
+          if (!path) return;
+          return CTX.workspaces.create({ path: path }).then(function (ws) {
+            var id = ws && (ws.workspaceId || ws.id);
+            if (!id) throw new Error("create returned no workspace id");
+            backdrop.remove();
+            assignWorkspace(repo, id, card);
+          });
+        }).catch(function (err) {
+          // pickDirectory throws on cancel too; only surface real failures
+          var msg = errText(err);
+          if (!/cancel|picker/i.test(msg)) toast("New workspace failed: " + msg);
+          newEl.textContent = "＋ New workspace — choose a directory…";
+        });
+      }
+    });
+  }
+
+  function assignWorkspace(repo, id, card) {
+    cfg.workspaces[repo] = id;
+    saveCfg(); // pushes to the host — every device gets it
+    openReviewSession(card); // retry the jump with the workspace in place
+  }
+
+
   function openReviewSession(card) {
     if (jumpBusy) return;
     if (!CTX || !CTX.sessions) { window.open(card.url, "_blank"); return; }
@@ -497,7 +566,7 @@
       var wsId = workspaceFor(repo);
       if (!wsId) {
         jumpBusy = false;
-        ghFallback("No review workspace configured for " + repo + ". Set one in Settings");
+        pickWorkspaceFor(card, repo);
         return;
       }
       if (typeof CTX.sessions.search !== "function") {
