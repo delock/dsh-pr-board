@@ -32,21 +32,38 @@ const SEARCH_FIELDS = "number,title,url,author,createdAt,updatedAt,closedAt,stat
 // `gh search issues --json` rejects PR-only fields like isDraft.
 const ISSUE_SEARCH_FIELDS = "number,title,url,author,createdAt,updatedAt,closedAt,state";
 
-// gh spawns fail with ENOENT when the binary is missing, and unauthenticated
-// runs surface as "gh auth login" hints in stderr. Translate both into
-// actionable setup messages instead of raw spawn errors.
 const GH_SETUP_HINT =
   "GitHub CLI (gh) not found on the DSH host. Install it from https://cli.github.com/ " +
   "and run `gh auth login`, then restart the web profile.";
 
+// gh spawns fail with ENOENT when the binary is missing, and a genuinely
+// unauthenticated gh surfaces as the CLI's own "gh auth login" onboarding
+// hint in stderr. Everything else auth-FLAVOURED — proxy 401/407 (the word
+// "Unauthorized" merely contains the letters "auth"), TLS, socket, timeout
+// and 5xx blips — is transient and self-heals on the next poll; reporting
+// those as "not authenticated" turned recoverable proxy hiccups into false
+// auth alarms.
 function ghError(r) {
   const raw = ((r.stderr || r.error) + "\n").split("\n")[0];
   if (/ENOENT/.test(r.error || "")) return GH_SETUP_HINT;
-  if (/auth|login|credential/i.test(raw)) {
-    return "GitHub CLI is not authenticated. Run `gh auth login` on the DSH host, then reload this page.";
-  }
   if (/rate limit|secondary rate/i.test(raw)) {
     return "GitHub API rate limit hit (search allows ~30 requests/min). The board keeps showing the last good data — retry in a minute.";
+  }
+  // The CLI's own onboarding / re-auth instruction: the only persistent
+  // "logged out" — it never heals by itself.
+  if (/gh auth (login|refresh)/i.test(raw)) {
+    return "GitHub CLI is not authenticated. Run `gh auth login` on the DSH host, then reload this page.";
+  }
+  // GitHub's canonical rejected-token body: persistent until the token is
+  // fixed — point at gh auth status instead of promising a retry.
+  if (/bad credentials/i.test(raw)) {
+    return "GitHub rejected the token (Bad credentials). Run `gh auth status` on the DSH host to check the account.";
+  }
+  // Auth-adjacent but upstream-shaped: proxy 401/407, timeouts, connection
+  // resets, TLS, 5xx, and silently-killed gh spawns. Transient — the board
+  // keeps the last good data and retries on the next poll.
+  if (/auth|login|credential|proxy|unauthorized|\b40[17]\b|http 5\d\d|\b5\d\d\b|timeout|timed out|connection|socket|tls|certificate|command failed/i.test(raw)) {
+    return "Transient gh failure (proxy/network/GitHub API) — keeping the last good data, retrying next poll [" + raw.slice(0, 140) + "]";
   }
   return raw;
 }

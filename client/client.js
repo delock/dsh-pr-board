@@ -486,13 +486,16 @@
       busy = false;
       // Transient failures (e.g. a search secondary rate-limit blip) must not
       // wipe the board to "error": keep the last good snapshot — whole-response
-      // level and per-repo level. The error state then only appears when there
-      // has never been a good load for that repo.
+      // level, per-repo level, and the cross-repo "mine" panel. The error state
+      // then only appears when there has never been a good load for that view.
       if (!v.ok && data && data.ok) return;
-      if (v.ok && data && data.ok && v.repos && data.repos) {
-        var prevByRepo = {};
-        data.repos.forEach(function (r) { if (r.ok) prevByRepo[r.repo] = r; });
-        v.repos.forEach(function (r) { if (!r.ok && prevByRepo[r.repo]) Object.assign(r, prevByRepo[r.repo]); });
+      if (v.ok && data && data.ok) {
+        if (v.mine && !v.mine.ok && data.mine && data.mine.ok) v.mine = data.mine;
+        if (v.repos && data.repos) {
+          var prevByRepo = {};
+          data.repos.forEach(function (r) { if (r.ok) prevByRepo[r.repo] = r; });
+          v.repos.forEach(function (r) { if (!r.ok && prevByRepo[r.repo]) Object.assign(r, prevByRepo[r.repo]); });
+        }
       }
       data = v;
       renderWidget();
