@@ -991,14 +991,18 @@
     var tabs = document.getElementById("pbo-tabs");
     var body = document.getElementById("pbo-body");
     if (!body) return;
-    // repo tabs: click to switch, hover shows × to remove (deletion lives here, not in the widget)
+    // repo tabs: click to switch, hover shows × to remove (deletion lives here, not in the widget).
+    // The "mine" tab (PRs I authored, all repos) sits after the repos — it's a
+    // sibling destination, not part of the pr/issue mode toggle.
     if (tabs) {
       var th = "";
+      var mineActive = boardMode === "mine";
       cfg.repos.forEach(function (repo) {
-        var act = repo === currentRepo();
+        var act = !mineActive && repo === currentRepo();
         th += '<span class="pbo-tab' + (act ? " pb-active" : "") + '" data-tab="' + esc(repo) + '" title="' + esc(repo) + '">' +
           esc(displayName(repo)) + '<i class="pbo-tab-x" data-remove="' + esc(repo) + '" title="Stop monitoring ' + esc(repo) + '">×</i></span>';
       });
+      th += '<span class="pbo-tab' + (mineActive ? " pb-active" : "") + ' pbo-tab-mine" data-tab-mine="1" title="Pull requests you authored (all repos)">mine</span>';
       th += '<span class="pbo-tab pbo-tab-add" data-tab-add="1" title="Add a repository">+</span>';
       tabs.innerHTML = th;
     }
@@ -1013,7 +1017,10 @@
     var colsDef = mineMode ? MINE_COLS : (issueMode ? ISS_COLS : COLS);
     var columnsSrc = mineMode ? (data.mine && data.mine.ok && data.mine.columns) : (issueMode ? (rd && rd.issueColumns) : (rd && rd.columns));
     var modeBtn = document.getElementById("pbo-mode");
-    if (modeBtn) modeBtn.textContent = mineMode ? "→ Pull requests" : (issueMode ? "→ Mine" : "→ Issues");
+    if (modeBtn) {
+      modeBtn.style.display = mineMode ? "none" : ""; // mine is a tab, not a mode
+      modeBtn.textContent = issueMode ? "→ Pull requests" : "→ Issues";
+    }
     var sub = document.getElementById("pbo-sub");
     if (sub) sub.textContent = (mineMode ? "my pull requests" : repo + (issueMode ? " · issues" : " · pull requests")) + " · @" + data.user + " · updated " + timeAgo(data.generatedAt);
     if (mineMode) {
@@ -1205,6 +1212,8 @@
       if (rmEl) { e.stopPropagation(); removeRepo(rmEl.getAttribute("data-remove")); return; }
       var tabAddEl = e.target.closest && e.target.closest("[data-tab-add]");
       if (tabAddEl) { e.stopPropagation(); addRepo(); return; }
+      var tabMineEl = e.target.closest && e.target.closest("[data-tab-mine]");
+      if (tabMineEl) { e.stopPropagation(); boardMode = "mine"; renderBoard(); return; }
       var tabEl = e.target.closest && e.target.closest("[data-tab]");
       if (tabEl) { activeRepo = tabEl.getAttribute("data-tab"); boardMode = "pr"; renderBoard(); return; }
       var sortEl = e.target.closest && e.target.closest("[data-sort]");
@@ -1245,7 +1254,7 @@
     document.getElementById("pbo-refresh").onclick = function () { refresh(true, true); };
     document.getElementById("pbo-cfg").onclick = openSettings;
     document.getElementById("pbo-mode").onclick = function () {
-      boardMode = boardMode === "pr" ? "issue" : (boardMode === "issue" ? "mine" : "pr");
+      boardMode = boardMode === "issue" ? "pr" : "issue";
       renderBoard();
     };
     document.getElementById("pbo-days").onchange = function () {
