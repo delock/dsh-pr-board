@@ -21,8 +21,15 @@
    degrade to one 36x36 icon button carrying a badge with the total count of
    items awaiting MY move, and let the click open the full board. */
 #pr-board-widget.pbw-rail{padding:8px 0 2px;margin-top:6px;display:flex;justify-content:center}
-#pr-board-widget.pbw-rail .pbw-head,#pr-board-widget.pbw-rail .pbw-list{display:none}
+#pr-board-widget.pbw-rail .pbw-head{display:none}
 #pr-board-widget.pbw-rail .pbw-railbtn{display:inline-flex}
+/* Rail hover panel: reuse the very list the expanded widget renders, so what
+   is shown here can never drift from the expanded face. The rail clips its
+   children (the host's regionArea sets overflow:hidden), hence position:fixed
+   with JS-assigned coordinates rather than an absolutely positioned child. */
+#pr-board-widget.pbw-rail .pbw-list{position:fixed;z-index:2147482500;display:none;min-width:250px;max-width:340px;max-height:70vh;overflow:auto;padding:10px 12px;border-radius:10px;background:var(--dsw-specific-sidebar-fill,#1c2129);color:var(--dsw-alias-label-primary,#d7dde5);box-shadow:0 8px 30px rgba(0,0,0,.45);border:1px solid color-mix(in srgb,currentColor 14%,transparent)}
+#pr-board-widget.pbw-rail.pbw-hover .pbw-list{display:flex}
+#pr-board-widget.pbw-rail .pbw-list::before{content:"PR Board";display:block;margin-bottom:6px;font-weight:600;opacity:.7}
 #pr-board-widget .pbw-railbtn{position:relative;display:none;width:36px;height:36px;align-items:center;justify-content:center;border-radius:50%;color:inherit;cursor:pointer}
 #pr-board-widget .pbw-railbtn:hover{background:color-mix(in srgb,currentColor 12%,transparent)}
 #pr-board-widget .pbw-railbtn svg{width:18px;height:18px;flex:none;pointer-events:none}
@@ -946,12 +953,55 @@
   function syncRail(sidebar, w) {
     var rail = sidebar.getBoundingClientRect().width <= RAIL_MAX_WIDTH;
     w.classList.toggle("pbw-rail", rail);
+    // Leaving rail mode with the panel still open would strand a fixed-position
+    // list over the expanded sidebar.
+    if (!rail) w.classList.remove("pbw-hover");
     if (rail) renderRailBadge();
+  }
+
+  // Hover panel on the rail: show the same .pbw-list the expanded widget
+  // renders. Placed beside the button in viewport coordinates and clamped to
+  // stay on screen; a short close delay lets the pointer cross the gap from
+  // the button to the panel without it vanishing.
+  var railHideTimer = null;
+  function placeRailPanel(w) {
+    var btn = w.querySelector(".pbw-railbtn");
+    var list = w.querySelector(".pbw-list");
+    if (!btn || !list) return;
+    var r = btn.getBoundingClientRect();
+    list.style.left = Math.round(r.right + 8) + "px";
+    list.style.top = "0px"; // reset before measuring, so a stale top cannot skew the height
+    var h = list.getBoundingClientRect().height;
+    var top = Math.round(r.top + r.height / 2 - h / 2);
+    var max = window.innerHeight - h - 8;
+    list.style.top = Math.max(8, Math.min(top, Math.max(8, max))) + "px";
+  }
+
+  function bindRailHover(w) {
+    if (w.__pbwHoverBound) return;
+    w.__pbwHoverBound = true;
+    var open = function () {
+      if (!w.classList.contains("pbw-rail")) return;
+      if (railHideTimer) { clearTimeout(railHideTimer); railHideTimer = null; }
+      w.classList.add("pbw-hover");
+      placeRailPanel(w);
+    };
+    var close = function () {
+      if (railHideTimer) clearTimeout(railHideTimer);
+      railHideTimer = setTimeout(function () { w.classList.remove("pbw-hover"); }, 180);
+    };
+    w.addEventListener("mouseenter", open);
+    w.addEventListener("mouseleave", close);
+    // The panel is a child of the widget, so its own enter/leave already ride
+    // the widget's handlers; keep focus parity for keyboard users.
+    w.addEventListener("focusin", open);
+    w.addEventListener("focusout", close);
   }
 
   function watchCollapse(sidebar, w) {
     if (w.__pbwWatched) return;
     w.__pbwWatched = true;
+    bindRailHover(w);
     var apply = function () { syncRail(sidebar, w); };
     apply();
     // Class flips drive the collapse; the width transition settles a frame later.
@@ -986,6 +1036,10 @@
     b.hidden = n === 0;
     var btn = document.getElementById("pbw-railbtn");
     if (btn) btn.title = n === 0 ? "PR Board" : "PR Board — " + n + " awaiting your move";
+    // A refresh that lands while the hover panel is open changes its height;
+    // re-anchor it so it stays centred on the button and on screen.
+    var w = document.getElementById("pr-board-widget");
+    if (w && w.classList.contains("pbw-hover")) placeRailPanel(w);
   }
 
   function renderWidget() {
