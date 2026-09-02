@@ -87,7 +87,8 @@ async function ghSearch(repo, qualifiers, extraArgs) {
   }
 }
 
-// Repo-less PR search (the "mine" view spans every repo I authored in).
+// Repo-less PR search (the "mine" view searches every repo I authored in,
+// then collectMine scopes the results back to the watch list).
 async function ghSearchAllPrs(qualifiers, extraArgs) {
   const args = ["search", "prs", ...qualifiers, ...extraArgs, "--json", SEARCH_FIELDS];
   const r = await gh(args);
@@ -521,7 +522,7 @@ async function boardData(repo, me, fresh, days) {
 async function boardDataMulti(repos, me, fresh, days) {
   // One collect() per repo, each cached independently; a repo that fails
   // degrades to its own error entry instead of sinking the whole response.
-  // The "mine" view (PRs I authored, every repo) rides along, cached apart.
+  // The "mine" view (PRs I authored in the watched repos) rides along, cached apart.
   const [out, mine] = await Promise.all([
     Promise.all(
       repos.map(async (repo) => {
@@ -534,7 +535,7 @@ async function boardDataMulti(repos, me, fresh, days) {
         }
       })
     ),
-    boardDataMine(me, fresh, days),
+    boardDataMine(me, fresh, days, repos),
   ]);
   return { ok: true, user: me, generatedAt: new Date().toISOString(), repos: out, mine };
 }
@@ -546,7 +547,7 @@ function repoFromUrl(url) {
   return m ? m[1] + "/" + m[2] : "";
 }
 
-async function collectMine(me, days) {
+async function collectMine(me, days, repos) {
   const open = ["--state", "open"];
   const [mineOpen, mineRecent] = await Promise.all([
     ghSearchAllPrs([`author:${me}`], [...open, "--limit", "50"]),
@@ -557,11 +558,23 @@ async function collectMine(me, days) {
   const cutoff = Number.isFinite(daysN) && daysN > 0 ? Date.now() - daysN * 86400 * 1000 : 0;
   const active = (iso) => !cutoff || ts(iso) >= cutoff;
 
+  // The author search is repo-less by necessity (no gh search qualifier lists
+  // N repos), so scope it back to the watch list here: a PR in a repo the
+  // board does not track has no row to be counted against, which is what made
+  // the widget's own numbers and the rail badge disagree. Undefined/empty
+  // means "no watch list configured" and keeps every repo.
+  // GitHub echoes the canonical casing (deepspeedai/DeepSpeed) while the
+  // config may hold any (deepspeedai/deepspeed), so match case-insensitively.
+  const watched = Array.isArray(repos) && repos.length
+    ? new Set(repos.map((r) => String(r).toLowerCase()))
+    : null;
+  const inScope = (repo) => !watched || watched.has(repo.toLowerCase());
+
   // Group open PRs by repo for the batched per-repo detail fetches.
   const byRepo = new Map();
   for (const p of mineOpen) {
     const repo = repoFromUrl(p.url);
-    if (!repo) continue;
+    if (!repo || !inScope(repo)) continue;
     if (!byRepo.has(repo)) byRepo.set(repo, []);
     byRepo.get(repo).push(p.number);
   }
@@ -587,7 +600,7 @@ async function collectMine(me, days) {
   }
   const CLOSED_WINDOW_MS = 14 * 86400 * 1000;
   const merged = mineRecent
-    .filter((p) => p.state === "merged" && Date.now() - ts(p.closedAt) < CLOSED_WINDOW_MS && active(p.closedAt))
+    .filter((p) => p.state === "merged" && Date.now() - ts(p.closedAt) < CLOSED_WINDOW_MS && active(p.closedAt) && inScope(repoFromUrl(p.url)))
     .sort((a, b) => ts(b.closedAt) - ts(a.closedAt))
     .slice(0, 8)
     .map((p) => {
@@ -605,12 +618,17 @@ async function collectMine(me, days) {
   };
 }
 
-async function boardDataMine(me, fresh, days) {
-  const key = "mine#" + me + "#" + (days || 0);
+async function boardDataMine(me, fresh, days, repos) {
+  // The watch list scopes the result, so it belongs in the cache key: editing
+  // the repo list must not serve a view built for the previous scope.
+  const scope = Array.isArray(repos) && repos.length
+    ? repos.map((r) => String(r).toLowerCase()).sort().join(",")
+    : "*";
+  const key = "mine#" + me + "#" + (days || 0) + "#" + scope;
   const hit = cache.get(key);
   const minAge = fresh ? 8000 : TTL_MS;
   if (hit && Date.now() - hit.at < minAge) return hit.promise;
-  const promise = collectMine(me, days).catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
+  const promise = collectMine(me, days, repos).catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
   cache.set(key, { at: Date.now(), promise });
   return promise;
 }

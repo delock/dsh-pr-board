@@ -15,6 +15,19 @@
   var CSS_TEXT = `
 #pr-board-widget{flex:none;margin-top:8px;padding:8px 2px 2px;border-top:1px solid color-mix(in srgb,currentColor 14%,transparent);font-size:12px;color:inherit;min-width:0;cursor:pointer}
 #pr-board-widget .pbw-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:5px;font-weight:600;gap:6px}
+/* Rail mode: the sidebar collapses to a ~56px icon rail (padding 18px 10px on
+   its root), where the wide layout — repo names, kind labels, four number
+   columns — is simply clipped. Mirror what the host's own controls do there:
+   degrade to one 36x36 icon button carrying a badge with the total count of
+   items awaiting MY move, and let the click open the full board. */
+#pr-board-widget.pbw-rail{padding:8px 0 2px;margin-top:6px;display:flex;justify-content:center}
+#pr-board-widget.pbw-rail .pbw-head,#pr-board-widget.pbw-rail .pbw-list{display:none}
+#pr-board-widget.pbw-rail .pbw-railbtn{display:inline-flex}
+#pr-board-widget .pbw-railbtn{position:relative;display:none;width:36px;height:36px;align-items:center;justify-content:center;border-radius:50%;color:inherit;cursor:pointer}
+#pr-board-widget .pbw-railbtn:hover{background:color-mix(in srgb,currentColor 12%,transparent)}
+#pr-board-widget .pbw-railbtn svg{width:18px;height:18px;flex:none;pointer-events:none}
+#pr-board-widget .pbw-railbadge{position:absolute;top:1px;right:0;min-width:15px;height:15px;padding:0 4px;box-sizing:border-box;border-radius:8px;background:#ef4444;color:#fff;font-size:10px;font-weight:700;line-height:15px;text-align:center;pointer-events:none}
+#pr-board-widget .pbw-railbadge[hidden]{display:none}
 #pr-board-widget .pbw-chip{display:inline-flex;align-items:center;gap:3px;padding:1px 6px;border-radius:8px;font-size:11px;font-weight:600;background:color-mix(in srgb,currentColor 10%,transparent)}
 #pr-board-widget .pbw-chip b{font-weight:700}
 #pr-board-widget .pbw-chip.me b{color:#60a5fa}
@@ -886,7 +899,13 @@
 
   function widgetHtml() {
     return '<div class="pbw-head"><span>PR Board</span><button class="pbw-add" id="pbw-add" title="Add a repository">+</button></div>' +
-      '<div class="pbw-list" id="pbw-row"><span class="pbw-chip" style="opacity:.6">Loading…</span></div>';
+      '<div class="pbw-list" id="pbw-row"><span class="pbw-chip" style="opacity:.6">Loading…</span></div>' +
+      // Collapsed-rail face: hidden by default, shown by CSS when .pbw-rail is set.
+      // git-pull-request glyph, so it reads as this plugin next to the host's icons.
+      '<div class="pbw-railbtn" id="pbw-railbtn" title="PR Board">' +
+      '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">' +
+      '<path d="M1.5 3.25a2.25 2.25 0 1 1 3 2.122v5.256a2.251 2.251 0 1 1-1.5 0V5.372A2.25 2.25 0 0 1 1.5 3.25Zm5.677-.177L9.573.677A.25.25 0 0 1 10 .854V2.5h1A2.5 2.5 0 0 1 13.5 5v5.628a2.251 2.251 0 1 1-1.5 0V5a1 1 0 0 0-1-1h-1v1.646a.25.25 0 0 1-.427.177L7.177 3.427a.25.25 0 0 1 0-.354ZM3.75 2.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm0 9.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm8.25.75a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0Z"/></svg>' +
+      '<span class="pbw-railbadge" id="pbw-railbadge" hidden></span></div>';
   }
 
   // Shared widget click handling: + adds a repo, the PR row opens the PR
@@ -915,10 +934,62 @@
       w.style.cssText = "";
     }
     sidebar.insertBefore(w, sidebar.lastChild);
+    watchCollapse(sidebar, w);
     return w;
   }
 
+  // Collapsed sidebar = icon rail. The host marks it with a hashed class
+  // (`hHd-Xa_collapsed`) whose prefix changes per build, so width is the
+  // stable signal: the rail sits near 56px, any expanded sidebar is far
+  // wider. Re-evaluated on the sidebar's own attribute/resize changes.
+  var RAIL_MAX_WIDTH = 120;
+  function syncRail(sidebar, w) {
+    var rail = sidebar.getBoundingClientRect().width <= RAIL_MAX_WIDTH;
+    w.classList.toggle("pbw-rail", rail);
+    if (rail) renderRailBadge();
+  }
+
+  function watchCollapse(sidebar, w) {
+    if (w.__pbwWatched) return;
+    w.__pbwWatched = true;
+    var apply = function () { syncRail(sidebar, w); };
+    apply();
+    // Class flips drive the collapse; the width transition settles a frame later.
+    new MutationObserver(function () {
+      apply();
+      setTimeout(apply, 220);
+    }).observe(sidebar, { attributes: true, attributeFilter: ["class", "style"] });
+    if (typeof ResizeObserver === "function") new ResizeObserver(apply).observe(sidebar);
+  }
+
+  // Total items awaiting MY move — the one number worth surfacing on the rail
+  // badge. Matches the "me" columns of the expanded widget: per-repo PRs and
+  // issues waiting on me, plus my own PRs that need my move.
+  function myTotal() {
+    var n = 0;
+    if (!data || !data.ok) return 0;
+    cfg.repos.forEach(function (repo) {
+      var rd = repoData(repo);
+      if (!rd || !rd.ok) return;
+      n += (rd.counts && rd.counts.waiting_me) || 0;
+      n += (rd.issueCounts && rd.issueCounts.waiting_me) || 0;
+    });
+    if (data.mine && data.mine.ok) n += (data.mine.counts && data.mine.counts.waiting_me) || 0;
+    return n;
+  }
+
+  function renderRailBadge() {
+    var b = document.getElementById("pbw-railbadge");
+    if (!b) return;
+    var n = myTotal();
+    b.textContent = n > 99 ? "99+" : String(n);
+    b.hidden = n === 0;
+    var btn = document.getElementById("pbw-railbtn");
+    if (btn) btn.title = n === 0 ? "PR Board" : "PR Board — " + n + " awaiting your move";
+  }
+
   function renderWidget() {
+    renderRailBadge();
     var row = document.getElementById("pbw-row");
     if (!row) return;
     if (!cfg.repos.length) {
