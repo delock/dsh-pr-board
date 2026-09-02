@@ -29,7 +29,7 @@
    with JS-assigned coordinates rather than an absolutely positioned child. */
 #pr-board-widget.pbw-rail .pbw-list{position:fixed;z-index:2147482500;display:none;min-width:250px;max-width:340px;max-height:70vh;overflow:auto;padding:10px 12px;border-radius:10px;background:var(--dsw-specific-sidebar-fill,#1c2129);color:var(--dsw-alias-label-primary,#d7dde5);box-shadow:0 8px 30px rgba(0,0,0,.45);border:1px solid color-mix(in srgb,currentColor 14%,transparent)}
 #pr-board-widget.pbw-rail.pbw-hover .pbw-list{display:flex}
-#pr-board-widget.pbw-rail .pbw-list::before{content:"PR Board";display:block;margin-bottom:6px;font-weight:600;opacity:.7}
+#pr-board-widget.pbw-rail .pbw-list::before{content:attr(data-pbw-title);display:block;margin-bottom:6px;font-weight:600;opacity:.7}
 #pr-board-widget .pbw-railbtn{position:relative;display:none;width:36px;height:36px;align-items:center;justify-content:center;border-radius:50%;color:inherit;cursor:pointer}
 #pr-board-widget .pbw-railbtn:hover{background:color-mix(in srgb,currentColor 12%,transparent)}
 #pr-board-widget .pbw-railbtn svg{width:18px;height:18px;flex:none;pointer-events:none}
@@ -909,7 +909,9 @@
       '<div class="pbw-list" id="pbw-row"><span class="pbw-chip" style="opacity:.6">Loading…</span></div>' +
       // Collapsed-rail face: hidden by default, shown by CSS when .pbw-rail is set.
       // git-pull-request glyph, so it reads as this plugin next to the host's icons.
-      '<div class="pbw-railbtn" id="pbw-railbtn" title="PR Board">' +
+      // No title= here: the hover panel is the tooltip, and a native one would
+      // pop over it. aria-label keeps the button readable to assistive tech.
+      '<div class="pbw-railbtn" id="pbw-railbtn" aria-label="PR Board">' +
       '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">' +
       '<path d="M1.5 3.25a2.25 2.25 0 1 1 3 2.122v5.256a2.251 2.251 0 1 1-1.5 0V5.372A2.25 2.25 0 0 1 1.5 3.25Zm5.677-.177L9.573.677A.25.25 0 0 1 10 .854V2.5h1A2.5 2.5 0 0 1 13.5 5v5.628a2.251 2.251 0 1 1-1.5 0V5a1 1 0 0 0-1-1h-1v1.646a.25.25 0 0 1-.427.177L7.177 3.427a.25.25 0 0 1 0-.354ZM3.75 2.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm0 9.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm8.25.75a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0Z"/></svg>' +
       '<span class="pbw-railbadge" id="pbw-railbadge" hidden></span></div>';
@@ -1034,8 +1036,14 @@
     var n = myTotal();
     b.textContent = n > 99 ? "99+" : String(n);
     b.hidden = n === 0;
+    var label = n === 0 ? "PR Board" : "PR Board — " + n + " awaiting your move";
     var btn = document.getElementById("pbw-railbtn");
-    if (btn) btn.title = n === 0 ? "PR Board" : "PR Board — " + n + " awaiting your move";
+    // aria-label, not title: the hover panel already says this, and a native
+    // tooltip would pop over it.
+    if (btn) btn.setAttribute("aria-label", label);
+    // The panel carries the same line as its heading, via ::before.
+    var row = document.getElementById("pbw-row");
+    if (row) row.setAttribute("data-pbw-title", label);
     // A refresh that lands while the hover panel is open changes its height;
     // re-anchor it so it stays centred on the button and on screen.
     var w = document.getElementById("pr-board-widget");
