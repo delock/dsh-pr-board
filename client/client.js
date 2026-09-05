@@ -617,10 +617,22 @@
   // creating) one assigns it, syncs it, and immediately retries the jump.
   function pickWorkspaceFor(card, repo) {
     var opts = workspaceOptions();
-    var canCreate = (function () {
-      var w = svc("workspaces");
-      return !!w && typeof w.pickDirectory === "function" && typeof w.create === "function";
+    // pickDirectory may live on either face across host generations.
+    var dirFace = (function () {
+      var faces = [svc("uiWorkspace"), svc("workspaces")];
+      for (var i = 0; i < faces.length; i++) {
+        if (faces[i] && typeof faces[i].pickDirectory === "function") return faces[i];
+      }
+      return null;
     })();
+    var createFace = (function () {
+      var faces = [svc("workspaces"), svc("uiWorkspace")];
+      for (var i = 0; i < faces.length; i++) {
+        if (faces[i] && typeof faces[i].create === "function") return faces[i];
+      }
+      return null;
+    })();
+    var canCreate = !!(dirFace && createFace);
     var backdrop = document.createElement("div");
     backdrop.id = "pr-board-wspick";
     var rows = opts
@@ -650,9 +662,9 @@
       var newEl = e.target.closest && e.target.closest("[data-newws]");
       if (newEl) {
         newEl.textContent = "Opening directory picker…";
-        svc("workspaces").pickDirectory().then(function (path) {
+        dirFace.pickDirectory().then(function (path) {
           if (!path) return;
-          return svc("workspaces").create({ path: path }).then(function (ws) {
+          return createFace.create({ path: path }).then(function (ws) {
             var id = ws && (ws.workspaceId || ws.id);
             if (!id) throw new Error("create returned no workspace id");
             backdrop.remove();
@@ -757,23 +769,42 @@
       return;
     }
     var _wsSvc = svc("workspaces");
-    if (!_wsSvc || !_wsSvc.startSession) {
+    // The split runtime moved the New Session flow off the workspaces CRUD
+    // face onto a separate uiWorkspace service (connectWorkspace returns the
+    // sessionId; startSession stays fire-and-forget). Prefer connect, then
+    // either face's startSession, then report.
+    var _uiWs = svc("uiWorkspace");
+    var _connectFn = _uiWs && typeof _uiWs.connectWorkspace === "function" ? function (id) { return _uiWs.connectWorkspace(id); } : null;
+    var _startFn = null;
+    if (_uiWs && typeof _uiWs.startSession === "function") _startFn = function (id) { _uiWs.startSession(id); };
+    else if (_wsSvc && typeof _wsSvc.startSession === "function") _startFn = function (id) { _wsSvc.startSession(id); };
+    if (!_connectFn && !_startFn) {
       jumpBusy = false;
       var diag = svcDiag();
       console.error("[pr-board] workspaces service unavailable — diagnostics:", JSON.stringify(diag));
-      ghFallback("Creating review session failed: workspaces service unavailable "
-        + "[get:" + diag.get + " wsProp:" + diag.wsProp + " wsGet:" + diag.wsGet + " ss:" + diag.ss
+      ghFallback("Creating review session failed: no session-start API on this host "
+        + "[get:" + diag.get + " wsProp:" + diag.wsProp + " uiWs:" + diag.uiWs + " ss:" + diag.ss
         + " keys:" + diag.keys.slice(0, 60) + "] — full details in the browser console");
       return;
     }
-    // The official path (same as the sidebar New button): connectWorkspace
-    // reuses an existing blank session, coalesces concurrent creates and
-    // handles attach failures; it opens the session itself. Direct
-    // sessions.create is a lower-level primitive and fails on the
-    // blank-session-already-exists cases that connectWorkspace absorbs.
+    if (_connectFn) {
+      // Deterministic path: the id comes back directly.
+      _connectFn(wsId).then(function (sid) {
+        if (!sid) throw new Error("connectWorkspace returned no session id");
+        bindSession(key, sid);
+        finishJump(sid, card, true, tag);
+        if (cfg.autoprompt !== false) sendReviewPrompt(sid, card, tag, 8);
+      }, function (e) {
+        jumpBusy = false;
+        ghFallback("Creating review session failed: " + errText(e));
+      });
+      return;
+    }
+    // Legacy fire-and-forget path: startSession opens the session itself, so
+    // watch the sessions list until `current` moves to a NEW blank session.
     var before = null;
     try { before = (svc("sessions").list.getSnapshot() || {}).current; } catch (e) {}
-    try { _wsSvc.startSession(wsId); }
+    try { _startFn(wsId); }
     catch (e) {
       jumpBusy = false;
       ghFallback("Creating review session failed: " + errText(e));
@@ -1552,14 +1583,11 @@
   // Surfaced in the toast (compact) and console.error (full) so a broken
   // host is identifiable from the report alone.
   function svcDiag() {
-    var d = { ctx: !!CTX, get: "n", wsProp: "n", wsGet: "n", ss: "n", keys: "" };
+    var d = { ctx: !!CTX, get: "n", wsProp: "n", uiWs: "n", ss: "n", keys: "" };
     try { d.keys = Object.keys(CTX || {}).join(","); } catch (e) { d.keys = "?"; }
     try { d.get = typeof (CTX && CTX.get) === "function" ? "y" : "n"; } catch (e) {}
     try { d.wsProp = CTX && CTX.workspaces ? "y" : "n"; } catch (e) { d.wsProp = "e"; }
-    try {
-      if (CTX && typeof CTX.get === "function") d.wsGet = CTX.get("workspaces") ? "y" : "n";
-      else d.wsGet = "-";
-    } catch (e) { d.wsGet = "e:" + String((e && e.message) || e).slice(0, 40); }
+    try { d.uiWs = svc("uiWorkspace") ? "y" : "n"; } catch (e) { d.uiWs = "e"; }
     try { d.ss = svc("sessions") ? "y" : "n"; } catch (e) { d.ss = "e"; }
     return d;
   }
