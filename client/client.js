@@ -372,13 +372,13 @@
     if (!e || !e.sid) return null;
     // Validate against the live list; a deleted/archived session re-binds.
     var snap = null;
-    try { snap = CTX && CTX.sessions && CTX.sessions.list.getSnapshot(); } catch (x) {}
+    try { var _ss = svc("sessions"); snap = _ss && _ss.list && _ss.list.getSnapshot(); } catch (x) {}
     // Archived counts as gone: archived sessions stay in the list snapshot
     // (flagged via the workspaces snapshot), and without this check a click
     // would drop you into the archived conversation instead of re-binding.
     var archived = [];
     try {
-      var wsSnap = CTX.workspaces && CTX.workspaces.list && CTX.workspaces.list.getSnapshot();
+      var _ws0 = svc("workspaces"); var wsSnap = _ws0 && _ws0.list && _ws0.list.getSnapshot();
       archived = (wsSnap && wsSnap.archivedSessionIds) || [];
     } catch (x) {}
     if ((snap && snap.byId && !(e.sid in snap.byId)) || archived.indexOf(e.sid) >= 0) {
@@ -602,7 +602,7 @@
   // workspaces are identified by path there), or null when unknown.
   function workspacePathOf(id) {
     try {
-      var snap = CTX.workspaces && CTX.workspaces.list && CTX.workspaces.list.getSnapshot();
+      var _ws1 = svc("workspaces"); var snap = _ws1 && _ws1.list && _ws1.list.getSnapshot();
       var items = (snap && snap.items) || [];
       for (var i = 0; i < items.length; i++) {
         if (items[i].workspaceId === id) return items[i].path || items[i].cwd || null;
@@ -617,6 +617,10 @@
   // creating) one assigns it, syncs it, and immediately retries the jump.
   function pickWorkspaceFor(card, repo) {
     var opts = workspaceOptions();
+    var canCreate = (function () {
+      var w = svc("workspaces");
+      return !!w && typeof w.pickDirectory === "function" && typeof w.create === "function";
+    })();
     var backdrop = document.createElement("div");
     backdrop.id = "pr-board-wspick";
     var rows = opts
@@ -625,7 +629,7 @@
     backdrop.innerHTML =
       '<div class="pbw-wsbox"><div class="pbw-wstitle">Review workspace for ' + esc(repo) + "</div>" +
       (rows || '<div class="pbw-wsnote">No workspaces yet — create one below.</div>') +
-      (typeof CTX.workspaces.pickDirectory === "function" && typeof CTX.workspaces.create === "function"
+      (canCreate
         ? '<div class="pbw-wsopt pbw-wsnew" data-newws="1">＋ New workspace — choose a directory…</div>'
         : "") +
       '<div class="pbw-wsnote pbw-wscancel" data-wscancel="1">Cancel — open on GitHub instead</div></div>';
@@ -646,9 +650,9 @@
       var newEl = e.target.closest && e.target.closest("[data-newws]");
       if (newEl) {
         newEl.textContent = "Opening directory picker…";
-        CTX.workspaces.pickDirectory().then(function (path) {
+        svc("workspaces").pickDirectory().then(function (path) {
           if (!path) return;
-          return CTX.workspaces.create({ path: path }).then(function (ws) {
+          return svc("workspaces").create({ path: path }).then(function (ws) {
             var id = ws && (ws.workspaceId || ws.id);
             if (!id) throw new Error("create returned no workspace id");
             backdrop.remove();
@@ -673,7 +677,7 @@
 
   function openReviewSession(card) {
     if (jumpBusy) return;
-    if (!CTX || !CTX.sessions) { window.open(card.url, "_blank"); return; }
+    if (!CTX || !svc("sessions")) { window.open(card.url, "_blank"); return; }
     jumpBusy = true;
     setTimeout(function () { if (jumpBusy) { jumpBusy = false; toast("PR board: jump timed out — click again"); } }, 15000);
     try {
@@ -689,7 +693,7 @@
         pickWorkspaceFor(card, repo);
         return;
       }
-      if (typeof CTX.sessions.search !== "function") {
+      if (typeof svc("sessions").search !== "function") {
         jumpBusy = false;
         toast("PR board: ctx.sessions.search is unavailable on this host. Details in the browser console.");
         console.error("[pr-board] ctx.sessions keys:", CTX.sessions && Object.keys(CTX.sessions));
@@ -703,7 +707,7 @@
       // and scored: "repo#N" (our convention) beats "#N" (human convention);
       // ties go to the most recently updated. Bare numbers without "#" never
       // match — too false-positive-prone.
-      CTX.sessions.search(String(card.number)).then(function (res) {
+      svc("sessions").search(String(card.number)).then(function (res) {
         var items = (res && res.ok && res.value && res.value.items) || [];
         if (wsPath) {
           items = items.filter(function (it) { return typeof it.cwd !== "string" || it.cwd === wsPath; });
@@ -752,7 +756,8 @@
       ghFallback("No review workspace configured for " + repo + ". Set one in Settings");
       return;
     }
-    if (!CTX.workspaces || !CTX.workspaces.startSession) {
+    var _wsSvc = svc("workspaces");
+    if (!_wsSvc || !_wsSvc.startSession) {
       jumpBusy = false;
       ghFallback("Creating review session failed: workspaces service unavailable");
       return;
@@ -763,8 +768,8 @@
     // sessions.create is a lower-level primitive and fails on the
     // blank-session-already-exists cases that connectWorkspace absorbs.
     var before = null;
-    try { before = (CTX.sessions.list.getSnapshot() || {}).current; } catch (e) {}
-    try { CTX.workspaces.startSession(wsId); }
+    try { before = (svc("sessions").list.getSnapshot() || {}).current; } catch (e) {}
+    try { _wsSvc.startSession(wsId); }
     catch (e) {
       jumpBusy = false;
       ghFallback("Creating review session failed: " + errText(e));
@@ -777,7 +782,7 @@
     var check = function () {
       if (done) return;
       var snap = null;
-      try { snap = CTX.sessions.list.getSnapshot(); } catch (e) { return; }
+      try { snap = svc("sessions").list.getSnapshot(); } catch (e) { return; }
       var cur = snap && snap.current;
       if (!cur || cur === before) return;
       var summary = snap.byId && snap.byId[cur];
@@ -792,7 +797,7 @@
         toast("Session is blank and untitled until you send something — next click reuses it via the binding table");
       }
     };
-    try { unsub = CTX.sessions.list.subscribe(check); } catch (e) {}
+    try { unsub = svc("sessions").list.subscribe(check); } catch (e) {}
     var timer = setInterval(function () {
       if (done || ++tries > 40) {
         clearInterval(timer);
@@ -812,7 +817,7 @@
   // rather than throwing — retry both, toast the wire cause on terminal failure.
   function sendReviewPrompt(sid, card, tag, attempts) {
     var b = null;
-    try { b = CTX.sessions.binding && CTX.sessions.binding(sid); } catch (e) {}
+    try { var _sb = svc("sessions"); b = _sb && _sb.binding && _sb.binding(sid); } catch (e) {}
     var sess = b && b.session;
     if (!sess || typeof sess.prompt !== "function") {
       if (attempts > 0) return setTimeout(function () { sendReviewPrompt(sid, card, tag, attempts - 1); }, 500);
@@ -876,7 +881,7 @@
   }
 
   function finishJump(sessionId, card, created, tag) {
-    try { CTX.sessions.open(sessionId); } catch (e) {}
+    try { svc("sessions").open(sessionId); } catch (e) {}
     jumpBusy = false;
     var ov = document.getElementById("pr-board-overlay");
     if (ov) ov.classList.remove("pb-show");
@@ -1224,9 +1229,10 @@
   // Workspace list from the GUI's own snapshot; label = name/title/cwd/id,
   // whichever the current wire exposes.
   function workspaceOptions() {
-    if (!CTX || !CTX.workspaces || !CTX.workspaces.list) return [];
+    var _ws2 = svc("workspaces");
+    if (!CTX || !_ws2 || !_ws2.list) return [];
     var snap;
-    try { snap = CTX.workspaces.list.getSnapshot(); } catch (e) { return []; }
+    try { snap = _ws2.list.getSnapshot(); } catch (e) { return []; }
     return ((snap && snap.items) || []).map(function (w, i) {
       return { n: i + 1, id: w.workspaceId, label: w.name || w.title || w.label || w.cwd || w.workspaceId };
     });
@@ -1523,8 +1529,25 @@
     document.head.appendChild(st);
   }
 
+  // Resolve a cordis service dynamically. rc hosts keyed service-waiting on
+  // the manifest package-inject list this plugin deliberately omits (the
+  // runtime package id no longer exists on alpha hosts), so the property
+  // accessors may be absent even though the service is provided — fall back
+  // to ctx.get(name), the access dshmarket uses for connection.
+  function svc(name) {
+    if (!CTX) return null;
+    try {
+      if (CTX[name]) return CTX[name];
+      if (typeof CTX.get === "function") return CTX.get(name) || null;
+    } catch (e) {}
+    return null;
+  }
+
   function apply(ctx) {
     CTX = ctx;
+    // One-shot dump: if services ever go missing again, the console names
+    // exactly what this host's loader handed us.
+    try { console.info("[pr-board] apply ctx keys:", Object.keys(ctx)); } catch (e) {}
     injectStyle();
     bindHotkey();
     if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);
