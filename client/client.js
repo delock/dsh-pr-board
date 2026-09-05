@@ -759,7 +759,11 @@
     var _wsSvc = svc("workspaces");
     if (!_wsSvc || !_wsSvc.startSession) {
       jumpBusy = false;
-      ghFallback("Creating review session failed: workspaces service unavailable");
+      var diag = svcDiag();
+      console.error("[pr-board] workspaces service unavailable — diagnostics:", JSON.stringify(diag));
+      ghFallback("Creating review session failed: workspaces service unavailable "
+        + "[get:" + diag.get + " wsProp:" + diag.wsProp + " wsGet:" + diag.wsGet + " ss:" + diag.ss
+        + " keys:" + diag.keys.slice(0, 60) + "] — full details in the browser console");
       return;
     }
     // The official path (same as the sidebar New button): connectWorkspace
@@ -1541,6 +1545,23 @@
       if (typeof CTX.get === "function") return CTX.get(name) || null;
     } catch (e) {}
     return null;
+  }
+
+  // Failure diagnostics for the service guards: what the loader actually
+  // handed us, whether ctx.get exists, and how each resolution path answers.
+  // Surfaced in the toast (compact) and console.error (full) so a broken
+  // host is identifiable from the report alone.
+  function svcDiag() {
+    var d = { ctx: !!CTX, get: "n", wsProp: "n", wsGet: "n", ss: "n", keys: "" };
+    try { d.keys = Object.keys(CTX || {}).join(","); } catch (e) { d.keys = "?"; }
+    try { d.get = typeof (CTX && CTX.get) === "function" ? "y" : "n"; } catch (e) {}
+    try { d.wsProp = CTX && CTX.workspaces ? "y" : "n"; } catch (e) { d.wsProp = "e"; }
+    try {
+      if (CTX && typeof CTX.get === "function") d.wsGet = CTX.get("workspaces") ? "y" : "n";
+      else d.wsGet = "-";
+    } catch (e) { d.wsGet = "e:" + String((e && e.message) || e).slice(0, 40); }
+    try { d.ss = svc("sessions") ? "y" : "n"; } catch (e) { d.ss = "e"; }
+    return d;
   }
 
   function apply(ctx) {
