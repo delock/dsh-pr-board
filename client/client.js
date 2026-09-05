@@ -145,7 +145,11 @@
 `;
 
   var name = "pr-board";
-  var inject = ["sessions", "workspaces"];
+  // uiWorkspace must be DECLARED, not just fetched: post-split hosts wrap
+  // third-party ctx in a whitelisting proxy that rejects undeclared services
+  // (ctx.get is gated the same way), and session creation lives only there
+  // (connectWorkspace). Official bundles declare it for the same reason.
+  var inject = ["sessions", "workspaces", "uiWorkspace"];
 
   // ---------------------------------------------------------------- frontend
 
