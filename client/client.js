@@ -1134,12 +1134,24 @@
         "</div>";
     });
     // Global "mine" row: PRs I authored in every repo — my move / their move.
-    var mn = data && data.mine && data.mine.ok ? data.mine.counts : { waiting_me: 0, waiting_others: 0 };
-    html += '<div class="pbw-rblock pbw-mine-row" data-widget-mine="1" title="Pull requests you authored (all repos)">' +
-      '<span class="pbw-name">mine</span><span class="pbw-kind">pr</span>' +
-      '<span class="pbw-cell me" title="My PRs needing my move">' + mn.waiting_me + "</span>" +
-      '<span class="pbw-cell author" title="My PRs waiting on others">' + mn.waiting_others + "</span>" +
-      "</div>";
+    // While the first mine cycle drains, show its search progress instead of
+    // misleading zeros (the row only counts after a good load).
+    var mn = data && data.mine && data.mine.ok ? data.mine.counts : null;
+    if (mn) {
+      html += '<div class="pbw-rblock pbw-mine-row" data-widget-mine="1" title="Pull requests you authored (all repos)">' +
+        '<span class="pbw-name">mine</span><span class="pbw-kind">pr</span>' +
+        '<span class="pbw-cell me" title="My PRs needing my move">' + mn.waiting_me + "</span>" +
+        '<span class="pbw-cell author" title="My PRs waiting on others">' + mn.waiting_others + "</span>" +
+        "</div>";
+    } else {
+      var mp = data && data.mine && data.mine.loading && data.mine.progress && data.mine.progress.total
+        ? data.mine.progress.done + "/" + data.mine.progress.total : "…";
+      html += '<div class="pbw-rblock pbw-mine-row" data-widget-mine="1" title="Pull requests you authored (all repos)">' +
+        '<span class="pbw-name">mine</span><span class="pbw-kind">pr</span>' +
+        '<span class="pbw-cell me" style="opacity:.6" title="loading first snapshot">⏳</span>' +
+        '<span class="pbw-cell author" style="opacity:.6" title="loading first snapshot">' + mp + "</span>" +
+        "</div>";
+    }
     row.innerHTML = html;
   }
 
