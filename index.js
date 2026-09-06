@@ -536,31 +536,36 @@ async function collect(repo, me, days) {
 // Rolling refresh: a paced cycle for several repos takes minutes — far longer
 // than the 60s TTL — so a naive TTL refresh would enqueue a second full cycle
 // while the first is still draining. The `refreshing` flag makes every request
-// that arrives mid-cycle serve the last COMPLETED snapshot and leave the
-// running cycle alone: its pending searches keep draining through the paced
-// lane, and the next cycle starts only after this one finishes (rolling
-// continuation, never a restart from scratch).
-// First ever load for a key has no stale snapshot to serve; the paced lane
-// makes a multi-repo cold start take minutes, longer than browser/server
-// timeouts, so we wait only a bounded grace and report a retryable loading
-// state — the cycle itself keeps draining host-side either way.
-const FIRST_LOAD_WAIT_MS = 250000;
+// that arrives mid-cycle serve the last COMPLETED snapshot (tagged
+// refreshing:true) and leave the running cycle alone: its pending searches
+// keep draining through the paced lane, and the next cycle starts only after
+// this one finishes (rolling continuation, never a restart from scratch).
+// Cold starts have no stale snapshot; instead of blocking the response for
+// the minutes a full paced cycle takes, they answer within a short grace and
+// report a retryable loading marker — the cycle keeps draining host-side and
+// the client's fast follow-up polls stream each repo in as it completes.
+const FIRST_LOAD_WAIT_MS = 20000;
+const LOADING_MSG =
+  "first snapshot still loading (paced searches) — it keeps draining in the background and appears as soon as it completes";
 
 function rollingRefresh(cache, key, minAge, collect) {
   const hit = cache.get(key);
   if (hit) {
-    if (hit.refreshing) return hit.stale || hit.promise; // mid-cycle: keep serving the last good data
+    if (hit.refreshing) {
+      if (hit.stale) return hit.stale.then((o) => ((o.refreshing = true), o)); // mid-cycle: last good data, tagged
+      return Promise.resolve({ ok: false, error: LOADING_MSG, refreshing: true });
+    }
     if (Date.now() - hit.at < minAge) return hit.promise;
   }
   const entry = { at: hit ? hit.at : Date.now(), refreshing: true, promise: null, stale: (hit && hit.promise) || null };
   entry.promise = collect()
     .catch((e) => ({ ok: false, error: String((e && e.message) || e) }))
-    .then((v) => { entry.at = Date.now(); entry.refreshing = false; entry.stale = null; return v; });
+    .then((v) => { entry.at = Date.now(); entry.refreshing = false; entry.stale = null; v.refreshing = false; return v; });
   cache.set(key, entry);
-  if (entry.stale) return entry.stale;
+  if (entry.stale) return entry.stale.then((o) => ((o.refreshing = true), o));
   return Promise.race([
     entry.promise,
-    sleep(FIRST_LOAD_WAIT_MS).then(() => ({ ok: false, error: "first snapshot still loading (paced searches) — it keeps draining in the background, retry in a few minutes" })),
+    sleep(FIRST_LOAD_WAIT_MS).then(() => ({ ok: false, error: LOADING_MSG, refreshing: true })),
   ]);
 }
 
@@ -582,8 +587,8 @@ async function boardDataMulti(repos, me, fresh, days) {
       repos.map(async (repo) => {
         try {
           const d = await boardData(repo, me, fresh, days);
-          if (!d.ok) return { repo, ok: false, error: d.error };
-          return { repo, ok: true, counts: d.counts, columns: d.columns, issueCounts: d.issueCounts, issueColumns: d.issueColumns };
+          if (!d.ok) return { repo, ok: false, error: d.error, refreshing: !!d.refreshing };
+          return { repo, ok: true, refreshing: !!d.refreshing, counts: d.counts, columns: d.columns, issueCounts: d.issueCounts, issueColumns: d.issueColumns };
         } catch (e) {
           return { repo, ok: false, error: String((e && e.message) || e) };
         }
@@ -591,7 +596,11 @@ async function boardDataMulti(repos, me, fresh, days) {
     ),
     boardDataMine(me, fresh, days, repos),
   ]);
-  return { ok: true, user: me, generatedAt: new Date().toISOString(), repos: out, mine };
+  // Aggregate "an update is in flight" so the client can fast-poll and stream
+  // repos in as each paced cycle completes instead of waiting for the whole
+  // round to finish.
+  const updating = out.some((r) => r.refreshing) || !!(mine && mine.refreshing);
+  return { ok: true, user: me, generatedAt: new Date().toISOString(), updating, repos: out, mine };
 }
 
 // "owner/name" out of a PR url — the global author search spans repos, so the

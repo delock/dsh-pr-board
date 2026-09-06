@@ -1177,12 +1177,18 @@
     if (tabs) {
       var th = "";
       var mineActive = boardMode === "mine";
+      // Per-repo paced-refresh state: repos whose cycle is still draining show
+      // a ↻ marker so "old data on screen" reads as "updating", not "stale".
+      var refMap = {};
+      ((data && data.repos) || []).forEach(function (r) { refMap[r.repo] = r.refreshing; });
       cfg.repos.forEach(function (repo) {
         var act = !mineActive && repo === currentRepo();
         th += '<span class="pbo-tab' + (act ? " pb-active" : "") + '" data-tab="' + esc(repo) + '" title="' + esc(repo) + '">' +
-          esc(displayName(repo)) + '<i class="pbo-tab-x" data-remove="' + esc(repo) + '" title="Stop monitoring ' + esc(repo) + '">×</i></span>';
+          esc(displayName(repo)) + (refMap[repo] ? ' <span style="opacity:.6;font-size:10px" title="refresh in progress">↻</span>' : "") +
+          '<i class="pbo-tab-x" data-remove="' + esc(repo) + '" title="Stop monitoring ' + esc(repo) + '">×</i></span>';
       });
-      th += '<span class="pbo-tab' + (mineActive ? " pb-active" : "") + ' pbo-tab-mine" data-tab-mine="1" title="Pull requests you authored (all repos)">mine</span>';
+      th += '<span class="pbo-tab' + (mineActive ? " pb-active" : "") + ' pbo-tab-mine" data-tab-mine="1" title="Pull requests you authored (all repos)">mine' +
+        (data && data.mine && data.mine.refreshing ? ' <span style="opacity:.6;font-size:10px" title="refresh in progress">↻</span>' : "") + "</span>";
       th += '<span class="pbo-tab pbo-tab-add" data-tab-add="1" title="Add a repository">+</span>';
       tabs.innerHTML = th;
     }
@@ -1489,12 +1495,18 @@
   }
 
   function restartPolling() {
-    if (pollTimer) clearInterval(pollTimer);
-    pollTimer = setInterval(function () {
+    if (pollTimer) clearTimeout(pollTimer);
+    // Adaptive cadence: while any repo's paced refresh cycle is still draining
+    // (data.updating, set host-side) poll fast so each repo streams onto the
+    // board the moment its cycle completes; otherwise fall back to the
+    // configured interval. Cheap requests — mid-cycle ones never touch the
+    // search lane.
+    var delay = (data && data.updating) ? 25000 : (cfg.interval || 5) * 60000;
+    pollTimer = setTimeout(function () {
       pullCfg(); // converge on config edited from another device
       pullBindings();
-      refresh(false, false);
-    }, (cfg.interval || 5) * 60000);
+      refresh(false, false).then(restartPolling, restartPolling);
+    }, delay);
   }
 
   function floatPill() {
