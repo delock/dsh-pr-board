@@ -82,13 +82,14 @@ function gh(args, timeoutMs) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Serial, paced search lane. GitHub search allows ~30 requests/min per
-// account; we budget under a quarter of that (one search every 8.5s ≈ 7/min)
-// so a poll cycle can never trip the primary quota nor the secondary (abuse)
-// limits that concurrent bursts trigger. Every gh search — the per-repo PR
+// account; we run at half that (one search every 4s = 15/min) — fast enough
+// that a full multi-repo cycle completes in a couple of minutes, while steady
+// serial traffic stays clear of the secondary (abuse) limits that concurrent
+// bursts trigger. Every gh search — the per-repo PR
 // and issue pools plus the repo-less "mine" searches — funnels through this
 // global FIFO; gh GraphQL/REST detail calls draw from different quotas and
 // stay outside the lane.
-const SEARCH_SPACING_MS = 8500;
+const SEARCH_SPACING_MS = 4000;
 let searchLane = Promise.resolve();
 let lastSearchStart = 0;
 function pacedSearch(args, timeoutMs) {
