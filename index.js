@@ -549,6 +549,60 @@ const FIRST_LOAD_WAIT_MS = 20000;
 const LOADING_MSG =
   "first snapshot still loading (paced searches) — it keeps draining in the background and appears as soon as it completes";
 
+// ---------------------------------------------------------------- disk snapshot
+// The rolling cache is process memory, so a `dsh web` restart used to wipe
+// every repo back to a cold start even though a complete snapshot existed
+// minutes earlier. Persist each COMPLETED cycle (value + timestamp) to
+// ~/.dsh/pr-board.snapshot.json, debounced, and pre-load it at boot: after a
+// restart the board serves the snapshot instantly and rolls a fresh cycle in
+// the background, exactly like any other stale-serve path.
+const SNAP_FILE = join(homedir(), ".dsh", "pr-board.snapshot.json");
+const SNAP_DEBOUNCE_MS = 5000;
+let snapTimer = null;
+
+function loadSnapshot() {
+  readFile(SNAP_FILE, "utf8")
+    .then((raw) => {
+      const data = JSON.parse(raw);
+      if (!data || typeof data !== "object" || !Array.isArray(data.entries)) return;
+      // Same freshness rule as saveSnapshot: older than a day is too stale to
+      // serve — a paced rebuild is more honest than week-old data.
+      const cutoff = Date.now() - 24 * 3600 * 1000;
+      for (const e of data.entries) {
+        if (!e || typeof e.key !== "string" || typeof e.at !== "number" || e.at < cutoff || !e.v || typeof e.v !== "object") continue;
+        if (cache.has(e.key)) continue; // live state always wins
+        e.v.refreshing = false;
+        cache.set(e.key, { at: e.at, refreshing: false, promise: Promise.resolve(e.v), stale: null });
+      }
+    })
+    .catch(() => {}); // no snapshot yet (first ever boot) or corrupt — cold start as before
+}
+
+function saveSnapshot() {
+  if (snapTimer) return;
+  snapTimer = setTimeout(() => {
+    snapTimer = null;
+    const entries = [];
+    for (const [key, entry] of cache) {
+      if (entry.refreshing || !entry.promise) continue;
+      entry.promise.then((v) => {
+        if (v && v.ok) entries.push({ key, at: entry.at, v });
+      }, () => {});
+    }
+    // entry.promise resolution is synchronous-safe here (completed entries
+    // hold settled promises), so the microtask below runs after all .thens.
+    Promise.resolve().then(() => {
+      // Only keep recent snapshots: ones older than a day are stale enough
+      // that a cold-paced rebuild is more honest than serving week-old data.
+      const cutoff = Date.now() - 24 * 3600 * 1000;
+      writeFile(SNAP_FILE, JSON.stringify({ savedAt: Date.now(), entries: entries.filter((e) => e.at >= cutoff) }) + "\n", "utf8").catch(() => {});
+    });
+  }, SNAP_DEBOUNCE_MS);
+  if (snapTimer.unref) snapTimer.unref();
+}
+
+loadSnapshot();
+
 function rollingRefresh(cache, key, minAge, collect) {
   const hit = cache.get(key);
   if (hit) {
@@ -561,7 +615,7 @@ function rollingRefresh(cache, key, minAge, collect) {
   const entry = { at: hit ? hit.at : Date.now(), refreshing: true, promise: null, stale: (hit && hit.promise) || null };
   entry.promise = collect()
     .catch((e) => ({ ok: false, error: String((e && e.message) || e) }))
-    .then((v) => { entry.at = Date.now(); entry.refreshing = false; entry.stale = null; v.refreshing = false; return v; });
+    .then((v) => { entry.at = Date.now(); entry.refreshing = false; entry.stale = null; v.refreshing = false; saveSnapshot(); return v; });
   cache.set(key, entry);
   if (entry.stale) return entry.stale.then((o) => ((o.refreshing = true), o));
   return Promise.race([
