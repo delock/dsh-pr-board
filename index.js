@@ -8,7 +8,10 @@
 //   ready_merge    ready: reviewDecision=APPROVED, mergeable, not draft
 //   merged         done: recently merged
 //   inbox          new & unclaimed: open PRs I never touched, one click adds me as reviewer
-// Data: host-side execFile gh (search + batched GraphQL), cached 60s.
+// Data: host-side execFile gh (search + batched GraphQL). Searches run through
+// a serial paced lane (one every 8.5s ≈ a quarter of GitHub's ~30/min search
+// quota) and refresh cycles roll: a request that lands mid-cycle serves the
+// last completed snapshot while the unfinished searches keep draining.
 // Client: client/client.js — a first-class client plugin (module-loader bundle)
 // with sidebar widget (counters) + fullscreen board (5 columns) + polling +
 // transition toasts + click-a-card-to-open-or-start-the-review-session.
@@ -76,9 +79,33 @@ function gh(args, timeoutMs) {
   });
 }
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Serial, paced search lane. GitHub search allows ~30 requests/min per
+// account; we budget under a quarter of that (one search every 8.5s ≈ 7/min)
+// so a poll cycle can never trip the primary quota nor the secondary (abuse)
+// limits that concurrent bursts trigger. Every gh search — the per-repo PR
+// and issue pools plus the repo-less "mine" searches — funnels through this
+// global FIFO; gh GraphQL/REST detail calls draw from different quotas and
+// stay outside the lane.
+const SEARCH_SPACING_MS = 8500;
+let searchLane = Promise.resolve();
+let lastSearchStart = 0;
+function pacedSearch(args, timeoutMs) {
+  const run = async () => {
+    const wait = lastSearchStart + SEARCH_SPACING_MS - Date.now();
+    if (wait > 0) await sleep(wait);
+    lastSearchStart = Date.now();
+    return gh(args, timeoutMs);
+  };
+  const result = searchLane.then(run, run);
+  searchLane = result.then(() => {}, () => {});
+  return result;
+}
+
 async function ghSearch(repo, qualifiers, extraArgs) {
   const args = ["search", "prs", "--repo", repo, ...qualifiers, ...extraArgs, "--json", SEARCH_FIELDS];
-  const r = await gh(args);
+  const r = await pacedSearch(args);
   if (!r.ok) throw new Error(ghError(r));
   try {
     return JSON.parse(r.stdout);
@@ -91,7 +118,7 @@ async function ghSearch(repo, qualifiers, extraArgs) {
 // then collectMine scopes the results back to the watch list).
 async function ghSearchAllPrs(qualifiers, extraArgs) {
   const args = ["search", "prs", ...qualifiers, ...extraArgs, "--json", SEARCH_FIELDS];
-  const r = await gh(args);
+  const r = await pacedSearch(args);
   if (!r.ok) throw new Error(ghError(r));
   try {
     return JSON.parse(r.stdout);
@@ -103,7 +130,7 @@ async function ghSearchAllPrs(qualifiers, extraArgs) {
 // Issue search: `gh search issues` also returns PRs unless `is:issue` pins it.
 async function ghSearchIssues(repo, qualifiers, extraArgs) {
   const args = ["search", "issues", "--repo", repo, "is:issue", ...qualifiers, ...extraArgs, "--json", ISSUE_SEARCH_FIELDS];
-  const r = await gh(args);
+  const r = await pacedSearch(args);
   if (!r.ok) throw new Error(ghError(r));
   try {
     return JSON.parse(r.stdout);
@@ -373,7 +400,7 @@ function card(pr, verdict, extra) {
 
 // ---------------------------------------------------------------- host: aggregation + cache
 
-const cache = new Map(); // key -> {at, promise}
+const cache = new Map(); // key -> {at, refreshing, promise, stale} (rollingRefresh)
 const TTL_MS = 60000;
 
 async function collect(repo, me, days) {
@@ -506,17 +533,44 @@ async function collect(repo, me, days) {
   };
 }
 
+// Rolling refresh: a paced cycle for several repos takes minutes — far longer
+// than the 60s TTL — so a naive TTL refresh would enqueue a second full cycle
+// while the first is still draining. The `refreshing` flag makes every request
+// that arrives mid-cycle serve the last COMPLETED snapshot and leave the
+// running cycle alone: its pending searches keep draining through the paced
+// lane, and the next cycle starts only after this one finishes (rolling
+// continuation, never a restart from scratch).
+// First ever load for a key has no stale snapshot to serve; the paced lane
+// makes a multi-repo cold start take minutes, longer than browser/server
+// timeouts, so we wait only a bounded grace and report a retryable loading
+// state — the cycle itself keeps draining host-side either way.
+const FIRST_LOAD_WAIT_MS = 250000;
+
+function rollingRefresh(cache, key, minAge, collect) {
+  const hit = cache.get(key);
+  if (hit) {
+    if (hit.refreshing) return hit.stale || hit.promise; // mid-cycle: keep serving the last good data
+    if (Date.now() - hit.at < minAge) return hit.promise;
+  }
+  const entry = { at: hit ? hit.at : Date.now(), refreshing: true, promise: null, stale: (hit && hit.promise) || null };
+  entry.promise = collect()
+    .catch((e) => ({ ok: false, error: String((e && e.message) || e) }))
+    .then((v) => { entry.at = Date.now(); entry.refreshing = false; entry.stale = null; return v; });
+  cache.set(key, entry);
+  if (entry.stale) return entry.stale;
+  return Promise.race([
+    entry.promise,
+    sleep(FIRST_LOAD_WAIT_MS).then(() => ({ ok: false, error: "first snapshot still loading (paced searches) — it keeps draining in the background, retry in a few minutes" })),
+  ]);
+}
+
 async function boardData(repo, me, fresh, days) {
   const key = repo + "#" + me + "#" + (days || 0);
-  const hit = cache.get(key);
-  // fresh=1 (the Refresh button) bypasses the 60s TTL but not an 8s floor:
-  // two quick clicks would otherwise fire the full 9-search burst per repo
-  // straight into the 30-requests/min search quota.
+  // fresh=1 (the Refresh button) re-kicks a FINISHED cycle sooner — the 8s
+  // floor still guards against click-spam — but never duplicates one that is
+  // mid-flight.
   const minAge = fresh ? 8000 : TTL_MS;
-  if (hit && Date.now() - hit.at < minAge) return hit.promise;
-  const promise = collect(repo, me, days).catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
-  cache.set(key, { at: Date.now(), promise });
-  return promise;
+  return rollingRefresh(cache, key, minAge, () => collect(repo, me, days));
 }
 
 async function boardDataMulti(repos, me, fresh, days) {
@@ -625,12 +679,8 @@ async function boardDataMine(me, fresh, days, repos) {
     ? repos.map((r) => String(r).toLowerCase()).sort().join(",")
     : "*";
   const key = "mine#" + me + "#" + (days || 0) + "#" + scope;
-  const hit = cache.get(key);
   const minAge = fresh ? 8000 : TTL_MS;
-  if (hit && Date.now() - hit.at < minAge) return hit.promise;
-  const promise = collectMine(me, days, repos).catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
-  cache.set(key, { at: Date.now(), promise });
-  return promise;
+  return rollingRefresh(cache, key, minAge, () => collectMine(me, days, repos));
 }
 
 // Resolved-username cache: with a blank configured username every /data call
