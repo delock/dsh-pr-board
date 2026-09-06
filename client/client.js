@@ -1525,11 +1525,23 @@
     // search lane.
     var delay = (data && data.updating) ? 15000 : (cfg.interval || 5) * 60000;
     pollTimer = setTimeout(function () {
-      pullCfg(); // converge on config edited from another device
-      pullBindings();
-      refresh(false, false).then(restartPolling, restartPolling);
+      // Re-arm FIRST: whatever happens below (a throwing handler, a hung
+      // fetch, background-tab timer throttling) the chain itself survives —
+      // next-tick-after-work scheduling died silently the first time anything
+      // slipped, freezing the widget until a manual refresh.
+      pollTimer = null;
+      restartPolling();
+      try { pullCfg(); } catch (e) {} // converge on config edited from another device
+      try { pullBindings(); } catch (e) {}
+      refresh(false, false);
     }, delay);
   }
+
+  // Background tabs get their timers heavily throttled; catch up the moment
+  // the page is visible again instead of waiting out the rest of an interval.
+  document.addEventListener("visibilitychange", function () {
+    if (!document.hidden && !busy) refresh(false, false);
+  });
 
   function floatPill() {
     if (document.getElementById("pr-board-widget")) return;
