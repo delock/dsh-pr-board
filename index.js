@@ -420,6 +420,12 @@ function card(pr, verdict, extra) {
 
 const cache = new Map(); // key -> {at, refreshing, promise, stale} (rollingRefresh)
 const TTL_MS = 60000;
+// Idle floor between COMPLETED cycles: the widget polls ~every minute (cheap
+// cache reads), and a plain 60s TTL would start cycles back-to-back, pinning
+// the search lane at its 15/min ceiling around the clock. A 3-minute floor
+// keeps sustained traffic near ~13/min while data is never more than a
+// couple of minutes behind.
+const CYCLE_FLOOR_MS = 180000;
 
 async function collect(repo, me, days) {
   const [owner, name] = repo.split("/");
@@ -655,7 +661,7 @@ async function boardData(repo, me, fresh, days) {
   // fresh=1 (the Refresh button) re-kicks a FINISHED cycle sooner — the 8s
   // floor still guards against click-spam — but never duplicates one that is
   // mid-flight.
-  const minAge = fresh ? 8000 : TTL_MS;
+  const minAge = fresh ? 8000 : Math.max(TTL_MS, CYCLE_FLOOR_MS);
   return rollingRefresh(cache, key, minAge, () => collect(repo, me, days));
 }
 
@@ -769,7 +775,7 @@ async function boardDataMine(me, fresh, days, repos) {
     ? repos.map((r) => String(r).toLowerCase()).sort().join(",")
     : "*";
   const key = "mine#" + me + "#" + (days || 0) + "#" + scope;
-  const minAge = fresh ? 8000 : TTL_MS;
+  const minAge = fresh ? 8000 : Math.max(TTL_MS, CYCLE_FLOOR_MS);
   return rollingRefresh(cache, key, minAge, () => collectMine(me, days, repos));
 }
 
