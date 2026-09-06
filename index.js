@@ -92,7 +92,17 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const SEARCH_SPACING_MS = 4000;
 let searchLane = Promise.resolve();
 let lastSearchStart = 0;
+
+// Per-key search progress for in-flight cycles, so cold starts can render a
+// real "3/9 searches" indicator per repo instead of a bare error. Every
+// pacedSearch call happens synchronously inside collect()'s prologue (the
+// Promise.all enqueues all searches before yielding), so each enqueued search
+// can be attributed to the cycle that enqueued it via `progressKey`.
+const progressReg = new Map(); // key -> { done, total }
+let progressKey = null;
+
 function pacedSearch(args, timeoutMs) {
+  const key = progressKey;
   const run = async () => {
     const wait = lastSearchStart + SEARCH_SPACING_MS - Date.now();
     if (wait > 0) await sleep(wait);
@@ -101,6 +111,13 @@ function pacedSearch(args, timeoutMs) {
   };
   const result = searchLane.then(run, run);
   searchLane = result.then(() => {}, () => {});
+  if (key) {
+    const p = progressReg.get(key);
+    if (p) {
+      p.total++;
+      result.then(() => { p.done++; }, () => { p.done++; });
+    }
+  }
   return result;
 }
 
@@ -603,24 +620,33 @@ function saveSnapshot() {
 
 loadSnapshot();
 
+function loadingPayload(key) {
+  const p = progressReg.get(key) || { done: 0, total: 0 };
+  return { ok: false, loading: true, refreshing: true, progress: { done: p.done, total: p.total }, error: LOADING_MSG };
+}
+
 function rollingRefresh(cache, key, minAge, collect) {
   const hit = cache.get(key);
   if (hit) {
     if (hit.refreshing) {
-      if (hit.stale) return hit.stale.then((o) => ((o.refreshing = true), o)); // mid-cycle: last good data, tagged
-      return Promise.resolve({ ok: false, error: LOADING_MSG, refreshing: true });
+      if (hit.stale) return hit.stale.then((o) => ((o.refreshing = true), (o.progress = null), o)); // mid-cycle: last good data, tagged
+      return Promise.resolve(loadingPayload(key));
     }
     if (Date.now() - hit.at < minAge) return hit.promise;
   }
   const entry = { at: hit ? hit.at : Date.now(), refreshing: true, promise: null, stale: (hit && hit.promise) || null };
-  entry.promise = collect()
+  progressReg.set(key, { done: 0, total: 0 });
+  progressKey = key;
+  const started = collect(); // enqueues this cycle's searches synchronously
+  progressKey = null;
+  entry.promise = started
     .catch((e) => ({ ok: false, error: String((e && e.message) || e) }))
-    .then((v) => { entry.at = Date.now(); entry.refreshing = false; entry.stale = null; v.refreshing = false; saveSnapshot(); return v; });
+    .then((v) => { entry.at = Date.now(); entry.refreshing = false; entry.stale = null; v.refreshing = false; v.progress = null; progressReg.delete(key); saveSnapshot(); return v; });
   cache.set(key, entry);
-  if (entry.stale) return entry.stale.then((o) => ((o.refreshing = true), o));
+  if (entry.stale) return entry.stale.then((o) => ((o.refreshing = true), (o.progress = null), o));
   return Promise.race([
     entry.promise,
-    sleep(FIRST_LOAD_WAIT_MS).then(() => ({ ok: false, error: LOADING_MSG, refreshing: true })),
+    sleep(FIRST_LOAD_WAIT_MS).then(() => loadingPayload(key)),
   ]);
 }
 
@@ -642,7 +668,7 @@ async function boardDataMulti(repos, me, fresh, days) {
       repos.map(async (repo) => {
         try {
           const d = await boardData(repo, me, fresh, days);
-          if (!d.ok) return { repo, ok: false, error: d.error, refreshing: !!d.refreshing };
+          if (!d.ok) return { repo, ok: false, error: d.error, loading: !!d.loading, refreshing: !!d.refreshing, progress: d.progress || null };
           return { repo, ok: true, refreshing: !!d.refreshing, counts: d.counts, columns: d.columns, issueCounts: d.issueCounts, issueColumns: d.issueColumns };
         } catch (e) {
           return { repo, ok: false, error: String((e && e.message) || e) };

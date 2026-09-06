@@ -1110,8 +1110,10 @@
     cfg.repos.forEach(function (repo) {
       var rd = repoData(repo);
       if (!rd || !rd.ok) {
+        // First-snapshot loading shows live search progress, not a scary error.
+        var lp = rd && rd.loading && rd.progress && rd.progress.total ? rd.progress.done + "/" + rd.progress.total : "…";
         html += '<div class="pbw-repo" data-widget-repo="' + esc(repo) + '" title="' + esc(repo) + '"><span class="pbw-name">' +
-          esc(displayName(repo)) + '</span><span class="pbw-chip" style="opacity:.6">error</span></div>';
+          esc(displayName(repo)) + '</span><span class="pbw-chip" style="opacity:.6">⏳ ' + lp + "</span></div>";
         return;
       }
       var c = rd.counts;
@@ -1167,6 +1169,17 @@
       '<div class="pbo-title-line"><a class="pbo-num" data-gh="' + esc(c.url) + '" href="' + esc(c.url) + '" target="_blank" rel="noopener" title="Open #' + c.number + ' on GitHub">#' + c.number + "</a>" + esc(c.title) + "</div>" + meta + claim + "</div>";
   }
 
+  // A repo whose first paced cycle is still draining renders as a progress
+  // box, not an error: spinner + "n/m searches" straight from the host-side
+  // search-lane counters, plus a paced-queue ETA hint.
+  function loadingHtml(label, rd) {
+    var p = rd && rd.progress;
+    var prog = p && p.total ? " · " + p.done + "/" + p.total + " searches" : "";
+    var eta = p && p.total ? " · ~" + Math.max(1, Math.round((p.total - p.done) * 4)) + "s left" : "";
+    return '<div class="pbo-loading">⏳ ' + esc(label) + ": loading first snapshot" + prog + eta +
+      '<div style="font-size:11px;opacity:.6;margin-top:4px">' + esc(rd && rd.error ? rd.error : "") + "</div></div>";
+  }
+
   function renderBoard() {
     var tabs = document.getElementById("pbo-tabs");
     var body = document.getElementById("pbo-body");
@@ -1178,17 +1191,24 @@
       var th = "";
       var mineActive = boardMode === "mine";
       // Per-repo paced-refresh state: repos whose cycle is still draining show
-      // a ↻ marker so "old data on screen" reads as "updating", not "stale".
+      // a progress marker ("3/9" while loading the first snapshot, ↻ while
+      // refreshing over stale data) so old data reads as "updating", not "stale".
       var refMap = {};
-      ((data && data.repos) || []).forEach(function (r) { refMap[r.repo] = r.refreshing; });
+      ((data && data.repos) || []).forEach(function (r) { refMap[r.repo] = r; });
       cfg.repos.forEach(function (repo) {
         var act = !mineActive && repo === currentRepo();
+        var st = refMap[repo];
+        var mark = "";
+        if (st && !st.ok && st.loading && st.progress && st.progress.total) mark = ' <span style="opacity:.65;font-size:10px" title="loading first snapshot">' + st.progress.done + "/" + st.progress.total + "</span>";
+        else if (st && st.refreshing) mark = ' <span style="opacity:.6;font-size:10px" title="refresh in progress">↻</span>';
         th += '<span class="pbo-tab' + (act ? " pb-active" : "") + '" data-tab="' + esc(repo) + '" title="' + esc(repo) + '">' +
-          esc(displayName(repo)) + (refMap[repo] ? ' <span style="opacity:.6;font-size:10px" title="refresh in progress">↻</span>' : "") +
+          esc(displayName(repo)) + mark +
           '<i class="pbo-tab-x" data-remove="' + esc(repo) + '" title="Stop monitoring ' + esc(repo) + '">×</i></span>';
       });
-      th += '<span class="pbo-tab' + (mineActive ? " pb-active" : "") + ' pbo-tab-mine" data-tab-mine="1" title="Pull requests you authored (all repos)">mine' +
-        (data && data.mine && data.mine.refreshing ? ' <span style="opacity:.6;font-size:10px" title="refresh in progress">↻</span>' : "") + "</span>";
+      var mineMark = (data && data.mine && !data.mine.ok && data.mine.loading && data.mine.progress && data.mine.progress.total)
+        ? ' <span style="opacity:.65;font-size:10px" title="loading first snapshot">' + data.mine.progress.done + "/" + data.mine.progress.total + "</span>"
+        : (data && data.mine && data.mine.refreshing ? ' <span style="opacity:.6;font-size:10px" title="refresh in progress">↻</span>' : "");
+      th += '<span class="pbo-tab' + (mineActive ? " pb-active" : "") + ' pbo-tab-mine" data-tab-mine="1" title="Pull requests you authored (all repos)">mine' + mineMark + "</span>";
       th += '<span class="pbo-tab pbo-tab-add" data-tab-add="1" title="Add a repository">+</span>';
       tabs.innerHTML = th;
     }
@@ -1211,10 +1231,12 @@
     if (sub) sub.textContent = (mineMode ? "my pull requests" : repo + (issueMode ? " · issues" : " · pull requests")) + " · @" + data.user + " · updated " + timeAgo(data.generatedAt);
     if (mineMode) {
       if (!data.mine) { body.innerHTML = '<div class="pbo-loading">Loading…</div>'; return; }
-      if (!data.mine.ok) { body.innerHTML = '<div class="pbo-error">mine: ' + esc(data.mine.error || "load failed") + "</div>"; return; }
+      if (!data.mine.ok) {
+        body.innerHTML = loadingHtml("mine", data.mine); return;
+      }
     } else {
       if (!rd) { body.innerHTML = '<div class="pbo-loading">Loading…</div>'; return; }
-      if (!rd.ok) { body.innerHTML = '<div class="pbo-error">' + esc(repo) + ": " + esc(rd.error || "load failed") + "</div>"; return; }
+      if (!rd.ok) { body.innerHTML = loadingHtml(repo, rd); return; }
     }
     var html = "";
     colsDef.forEach(function (col) {
@@ -1501,7 +1523,7 @@
     // board the moment its cycle completes; otherwise fall back to the
     // configured interval. Cheap requests — mid-cycle ones never touch the
     // search lane.
-    var delay = (data && data.updating) ? 25000 : (cfg.interval || 5) * 60000;
+    var delay = (data && data.updating) ? 15000 : (cfg.interval || 5) * 60000;
     pollTimer = setTimeout(function () {
       pullCfg(); // converge on config edited from another device
       pullBindings();
