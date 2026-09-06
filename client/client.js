@@ -1519,13 +1519,14 @@
   function restartPolling() {
     if (pollTimer) clearTimeout(pollTimer);
     // Adaptive cadence: while any repo's paced refresh cycle is still draining
-    // (data.updating, set host-side) poll fast so each repo streams onto the
-    // board the moment its cycle completes; otherwise poll at most every
-    // minute (a cache read on the host — new cycles are separately floored at
-    // 3 minutes, so this cadence costs nothing against the search quota) so
-    // the sidebar stays fresh without opening the dashboard.
+    // (data.updating, set host-side) poll every 5s so the cold-start progress
+    // indicators visibly tick and each repo streams onto the board the moment
+    // its cycle completes; otherwise poll at most every minute (a cache read
+    // on the host — new cycles are separately floored at 3 minutes, so this
+    // cadence costs nothing against the search quota) so the sidebar stays
+    // fresh without opening the dashboard.
     var idle = Math.min((cfg.interval || 5) * 60000, 60000);
-    var delay = (data && data.updating) ? 15000 : idle;
+    var delay = (data && data.updating) ? 5000 : idle;
     pollTimer = setTimeout(function () {
       // Re-arm FIRST: whatever happens below (a throwing handler, a hung
       // fetch, background-tab timer throttling) the chain itself survives —
