@@ -1,10 +1,12 @@
 // dsh-pr-board — maintainer PR review queue board for DeepSeek Harness
 // ---------------------------------------------------------------
 // State machine (for open PRs I'm involved in or requested on):
-//   waiting_me     my move: review requested / author pushed or replied after my last action /
-//                  new commits landed after my approval
-//   waiting_author author's move: I (or another maintainer) requested changes and the author
-//                  has been quiet since, or approved but draft/conflicting
+//   waiting_me     my move: review requested with no substantive word from me yet /
+//                  author pushed or replied after my last action / new commits after my approval
+//   waiting_author author's move: I (or another maintainer) requested changes or left a
+//                  substantive comment and the author has been quiet since; approved but
+//                  draft/conflicting. Trivial comments (emoji-only, "+1", "thanks") hold no
+//                  place in the turnstile — see substantial().
 //   ready_merge    ready: reviewDecision=APPROVED, mergeable, not draft
 //   merged         done: recently merged
 //   inbox          new & unclaimed: open PRs I never touched, one click adds me as reviewer
@@ -193,8 +195,8 @@ const DETAIL_FIELDS = [
   "createdAt updatedAt",
   "reviewDecision mergeable isInMergeQueue mergeStateStatus autoMergeRequest { enabledAt }",
   "commits(last:1) { nodes { commit { committedDate statusCheckRollup { state } } } }",
-  "reviews(last:8) { nodes { author { login } state submittedAt comments(last:5) { nodes { author { login } createdAt } } } }",
-  "comments(last:8) { nodes { author { login } createdAt } }",
+  "reviews(last:8) { nodes { author { login } state submittedAt comments(last:5) { nodes { author { login } createdAt body } } } }",
+  "comments(last:8) { nodes { author { login } createdAt body } }",
 ].join("\n");
 
 const ISSUE_FIELDS = [
@@ -202,7 +204,7 @@ const ISSUE_FIELDS = [
   "author { login }",
   "createdAt updatedAt",
   "assignees(first:10) { nodes { login } }",
-  "comments(last:10) { nodes { author { login } createdAt } }",
+  "comments(last:10) { nodes { author { login } createdAt body } }",
 ].join("\n");
 
 // ---------------------------------------------------------------- host: state machine
@@ -215,6 +217,21 @@ function isBot(login) {
   return !login || /\[bot\]$/i.test(login) || login === "github-actions";
 }
 
+// A comment only counts as a move in the turnstile if it says something.
+// Emoji-only, "+1"-style acknowledgements carry no question and expect no
+// follow-up, so they hold no place on either side. (GitHub reactions are a
+// separate GraphQL connection we never fetch — they were never actions.)
+// Formal review submissions always count: submitting one is an intentional act.
+function substantial(body) {
+  const t = String(body || "")
+    .replace(/<!--[\s\S]*?-->/g, "") // hidden HTML comments carry no content
+    .trim();
+  if (!t) return false;
+  if (/^[\p{Extended_Pictographic}\p{P}\p{S}\s]+$/u.test(t)) return false; // emoji/punctuation only
+  if (/^(thanks?|ty|nice|lgtm|ok|okay|ack|np|done|fixed|ping|bump)[\s.!]*$/i.test(t)) return false;
+  return true;
+}
+
 // Classify one PR. requestedSet = PR numbers where my review is requested.
 function classify(pr, me, requestedSet) {
   const author = (pr.author && pr.author.login) || "";
@@ -224,31 +241,42 @@ function classify(pr, me, requestedSet) {
   const comments = (pr.comments && pr.comments.nodes) || [];
   const lastCommit = ts(pr.commits && pr.commits.nodes && pr.commits.nodes[0] && pr.commits.nodes[0].commit && pr.commits.nodes[0].commit.committedDate);
 
-  // My last action (review / issue comment / reply inside a review thread)
+  // My last action (review / substantive issue comment / substantive reply
+  // inside a review thread). A DISMISSED review is a revoked position, not a
+  // standing one: it doesn't hold the ball (the re-request rule below pulls
+  // such PRs back to me unless I commented after the dismissal).
   let myLastAction = 0;
   let myLastReview = null;
+  let myLastCommentTs = 0;
   for (const rv of reviews) {
     if (rv.author && rv.author.login === me) {
-      myLastAction = Math.max(myLastAction, ts(rv.submittedAt));
+      if (rv.state !== "DISMISSED") myLastAction = Math.max(myLastAction, ts(rv.submittedAt));
       if (!myLastReview || ts(rv.submittedAt) > ts(myLastReview.submittedAt)) myLastReview = rv;
     }
     for (const rc of (rv.comments && rv.comments.nodes) || []) {
-      if (rc.author && rc.author.login === me) myLastAction = Math.max(myLastAction, ts(rc.createdAt));
+      if (rc.author && rc.author.login === me && substantial(rc.body)) {
+        myLastAction = Math.max(myLastAction, ts(rc.createdAt));
+        myLastCommentTs = Math.max(myLastCommentTs, ts(rc.createdAt));
+      }
     }
   }
   for (const c of comments) {
-    if (c.author && c.author.login === me) myLastAction = Math.max(myLastAction, ts(c.createdAt));
+    if (c.author && c.author.login === me && substantial(c.body)) {
+      myLastAction = Math.max(myLastAction, ts(c.createdAt));
+      myLastCommentTs = Math.max(myLastCommentTs, ts(c.createdAt));
+    }
   }
 
-  // Author's last activity (push / issue comment / reply inside a review thread)
+  // Author's last activity (push / substantive comment / review / substantive
+  // reply inside a review thread). Their emoji-only "+1" is not a follow-up.
   let authorLast = lastCommit;
   for (const c of comments) {
-    if (c.author && c.author.login === author) authorLast = Math.max(authorLast, ts(c.createdAt));
+    if (c.author && c.author.login === author && substantial(c.body)) authorLast = Math.max(authorLast, ts(c.createdAt));
   }
   for (const rv of reviews) {
     if (rv.author && rv.author.login === author) authorLast = Math.max(authorLast, ts(rv.submittedAt));
     for (const rc of (rv.comments && rv.comments.nodes) || []) {
-      if (rc.author && rc.author.login === author) authorLast = Math.max(authorLast, ts(rc.createdAt));
+      if (rc.author && rc.author.login === author && substantial(rc.body)) authorLast = Math.max(authorLast, ts(rc.createdAt));
     }
   }
 
@@ -300,11 +328,16 @@ function classify(pr, me, requestedSet) {
     return { state: "ready_merge", reason: "approved" };
   }
   // my move
-  if (requested && (!myLastReview || myLastReview.state === "DISMISSED")) {
-    return { state: "waiting_me", reason: myLastReview ? "re-request" : "review-requested" };
-  }
   if (commitsAfterMyApproval) return { state: "waiting_me", reason: "new-commits-after-approve" };
   if (myLastAction && authorLast > myLastAction) return { state: "waiting_me", reason: "author-responded" };
+  // A pending review request only pulls the PR back to me when I've had no
+  // substantive word on it. My own comment (question, change request in prose,
+  // answer) is the last word — the follow-up is the author's, request or not.
+  const dismissed = myLastReview && myLastReview.state === "DISMISSED";
+  const commentHold = myLastCommentTs > 0 && (!myLastReview || dismissed || myLastCommentTs > ts(myLastReview.submittedAt));
+  if (requested && !commentHold && (!myLastReview || dismissed)) {
+    return { state: "waiting_me", reason: myLastReview ? "re-request" : "review-requested" };
+  }
   // author's move
   if (myLastReview && myLastReview.state === "CHANGES_REQUESTED") return { state: "waiting_author", reason: "changes-requested" };
   if (otherChangeRequest || pr.reviewDecision === "CHANGES_REQUESTED") return { state: "waiting_author", reason: "changes-requested-other" };
@@ -322,6 +355,7 @@ function classifyIssue(d, me, assignedSet, mentionedSet) {
   for (const c of comments) {
     const who = c.author && c.author.login;
     const t = ts(c.createdAt);
+    if (!substantial(c.body)) continue; // emoji-only / "+1" replies move nothing
     if (who === me) myLast = Math.max(myLast, t);
     else if (who === ((d.author && d.author.login) || "") && !isBot(who)) reporterLast = Math.max(reporterLast, t);
   }
@@ -364,6 +398,7 @@ function classifyMine(d, me) {
     for (const rc of (rv.comments && rv.comments.nodes) || []) {
       const rca = (rc.author && rc.author.login) || "";
       const rcat = ts(rc.createdAt);
+      if (!substantial(rc.body)) continue; // reviewer's emoji reply asks nothing of me
       if (rca === me) myLast = Math.max(myLast, rcat);
       else if (!isBot(rca)) othersLast = Math.max(othersLast, rcat);
     }
@@ -371,6 +406,7 @@ function classifyMine(d, me) {
   for (const c of comments) {
     const who = c.author && c.author.login;
     const at = ts(c.createdAt);
+    if (!substantial(c.body)) continue;
     if (who === me) myLast = Math.max(myLast, at);
     else if (!isBot(who)) othersLast = Math.max(othersLast, at);
   }

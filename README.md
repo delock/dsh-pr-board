@@ -22,7 +22,7 @@ Review PR 本质是队列管理。GitHub 原生界面无法直接告诉你"作�
 
 | Column / 列 | Meaning / 含义 | How it's decided / 判定依据 |
 | --- | --- | --- |
-| **Waiting on me** 等我行动 | Your move / 该你出手 | Review requested; or the author pushed/replied after your last review; or new commits landed after your approval |
+| **Waiting on me** 等我行动 | Your move / 该你出手 | Review requested with no substantive word from you yet; or the author pushed/replied after your last action; or new commits landed after your approval. Your own substantive comment holds the ball with the author — emoji-only / "+1"-style comments don't count on either side |
 | **Waiting on author** 等作者行动 | Their move / 等作者 | You (or another maintainer) requested changes and the author has been quiet since; approved but draft or conflicting |
 | **Ready to merge** 可合并 | Green light / 绿灯 | `reviewDecision = APPROVED`, mergeable, not draft — or in a merge queue, or auto-merge armed with nothing blocking (blocked auto-merge waits on the author) |
 | **Merged** 已合并 | Done / 完成 | Recently merged PRs you reviewed |
