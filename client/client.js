@@ -919,8 +919,21 @@
     }
   }
 
-  function finishJump(sessionId, card, created, tag) {
+  // Reveal the session in the main panel. 0.1.7-rc hosts dropped
+  // sessions.open(id) for a retention model: binding(id) (and thus the
+  // session.prompt() the autoprompt needs) only answers once a scope is
+  // retained — which uiWorkspace.openSession → replaceMain → retain does
+  // synchronously, while also navigating. Keep sessions.open for older hosts.
+  function revealSession(sessionId) {
+    var ui = svc("uiWorkspace");
+    if (ui && typeof ui.openSession === "function") {
+      try { ui.openSession(sessionId); return; } catch (e) { console.error("[pr-board] openSession failed:", e); }
+    }
     try { svc("sessions").open(sessionId); } catch (e) {}
+  }
+
+  function finishJump(sessionId, card, created, tag) {
+    revealSession(sessionId);
     jumpBusy = false;
     var ov = document.getElementById("pr-board-overlay");
     if (ov) ov.classList.remove("pb-show");
