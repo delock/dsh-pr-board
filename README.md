@@ -11,6 +11,14 @@ It answers one question: **which PRs need me, right now?**
 titles are all fictional, and the image carries an EXAMPLE stamp.
 · 图中的仓库、作者、PR 编号与标题均为虚构，图上带有 EXAMPLE 水印。*
 
+<img src="docs/pr-board-sidebar.png" width="316" alt="PR Board sidebar counters with example data">
+
+*The same example data in the sidebar: one PR row and one indented issue row
+per repository (me / author / ready / inbox, then me / reporter), plus a
+`mine` row for PRs you authored. · 同一套示例数据在侧边栏里的样子：每个仓库一行
+PR 计数 + 一行缩进的 issue 计数（等我 / 等作者 / 可合并 / 待分诊，然后是等我 /
+等报告者），外加一行 `mine` 表示你自己提的 PR。*
+
 ---
 
 ## Why / 解决什么问题
