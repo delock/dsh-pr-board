@@ -5,6 +5,12 @@ It answers one question: **which PRs need me, right now?**
 
 一个为 DeepSeek Harness 做的**维护者 PR 看板**：回答一个问题——**现在哪些 PR 在等我？**
 
+![PR Board with example data](docs/pr-board.png)
+
+*The board shown with example data — the repository, authors, PR numbers and
+titles are all fictional, and the image carries an EXAMPLE stamp.
+· 图中的仓库、作者、PR 编号与标题均为虚构，图上带有 EXAMPLE 水印。*
+
 ---
 
 ## Why / 解决什么问题
