@@ -105,6 +105,20 @@
 #pr-board-overlay .pbo-sort{margin-left:auto;padding:1px 8px;border-radius:6px;border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.08);color:#fff;font-size:11px;cursor:pointer;flex:none}
 #pr-board-overlay .pbo-sort:hover{background:rgba(255,255,255,.18)}
 #pr-board-overlay .pbo-col-head i{width:8px;height:8px;border-radius:50%;flex:none}
+/* Inbox triage controls ride INSIDE the Inbox header row, right-aligned after
+   "Inbox <n>", so they cost no vertical space at all. They are sized to the
+   header's existing content height (a checkbox plus two 17px fields, against
+   the 18px sort button other headers already carry), which keeps every
+   column's header — and therefore every column's first card — on one line. */
+#pr-board-overlay .pbo-col-head .pbo-col-filter{display:flex;align-items:center;gap:4px;flex:1 1 auto;min-width:0;margin-left:auto}
+#pr-board-overlay .pbo-f-check{display:inline-flex;align-items:center;gap:2px;flex:none;font-size:10.5px;font-weight:600;color:rgba(255,255,255,.78);cursor:pointer;user-select:none;white-space:nowrap}
+#pr-board-overlay .pbo-f-check input{width:11px;height:11px;margin:0;padding:0;accent-color:#c4b5fd;cursor:pointer}
+#pr-board-overlay .pbo-f-input{flex:1 1 0;min-width:0;box-sizing:border-box;height:17px;padding:0 5px;border-radius:5px;border:1px solid rgba(255,255,255,.16);background:rgba(255,255,255,.06);color:#e6edf6;font-size:10.5px;outline:none}
+#pr-board-overlay .pbo-f-input::placeholder{color:rgba(255,255,255,.34)}
+#pr-board-overlay .pbo-f-input:hover{border-color:rgba(255,255,255,.26)}
+#pr-board-overlay .pbo-f-input:focus{border-color:rgba(196,181,253,.6);background:rgba(196,181,253,.1)}
+#pr-board-overlay .pbo-col-list{display:flex;flex-direction:column;gap:8px;min-width:0}
+#pr-board-overlay .pbo-count .pbo-count-of{opacity:.8}
 #pr-board-overlay .pbo-card{position:relative;padding:8px 10px;border-radius:8px;background:#1c2129;color:#d7dde5;font-size:12px;line-height:1.45;cursor:pointer;border:1px solid transparent;min-width:0}
 #pr-board-overlay .pbo-card:hover{border-color:rgba(255,255,255,.25);background:#232935}
 #pr-board-overlay .pbo-num{font-weight:700;color:#7aa7ff;margin-right:4px;text-decoration:none;cursor:pointer}
@@ -156,7 +170,7 @@
   var CTX = null;
 
   var CFG_KEY = "prboard.cfg", LAST_KEY = "prboard.last", BIND_KEY = "prboard.sessions";
-  var DEFAULTS = { repos: [], user: "", workspaces: {}, autoprompt: true, inactiveDays: 30, interval: 5, sort: { waiting_me: "new", waiting_author: "new" } };
+  var DEFAULTS = { repos: [], user: "", workspaces: {}, autoprompt: true, inactiveDays: 30, interval: 5, sort: { waiting_me: "new", waiting_author: "new" }, inbox: { drafts: true, author: "", keyword: "" } };
   var COLS = [
     { key: "waiting_me", name: "Waiting on me", color: "#60a5fa" },
     { key: "waiting_author", name: "Waiting on author", color: "#fbbf24" },
@@ -236,6 +250,15 @@
     delete c.workspace;
     if (typeof c.autoprompt !== "boolean") c.autoprompt = true;
     if (typeof c.inactiveDays !== "number" || !isFinite(c.inactiveDays) || c.inactiveDays < 0 || c.inactiveDays > 365) c.inactiveDays = 30;
+    // Inbox triage filters are a per-browser view preference (like `sort`):
+    // they never ride the host-synced config, and every field is re-validated
+    // so a hand-edited localStorage entry cannot break rendering.
+    var ib = c.inbox && typeof c.inbox === "object" ? c.inbox : {};
+    c.inbox = {
+      drafts: ib.drafts !== false, // default: keep today's behaviour (drafts shown)
+      author: typeof ib.author === "string" ? ib.author.slice(0, 80) : "",
+      keyword: typeof ib.keyword === "string" ? ib.keyword.slice(0, 120) : ""
+    };
     return c;
   }
   function saveCfg() {
@@ -1205,6 +1228,76 @@
       '<div style="font-size:11px;opacity:.6;margin-top:4px">' + esc(rd && rd.error ? rd.error : "") + "</div></div>";
   }
 
+  // ---------- inbox triage filters ----------
+  // Three controls sit at the right end of the Inbox header row, after
+  // "Inbox <n>": a draft switch plus two substring fields (author login, title
+  // keyword or PR number). They narrow the cards the host already delivered
+  // for this column — no extra `gh` search, so the candidate pool stays what
+  // the host fetched (its newest 100 open PRs). The header count turns into
+  // "shown/total" as soon as anything is hidden, so a zero is never mistaken
+  // for "no PRs". The fields are sized to the header's own height, so putting
+  // them inline costs no vertical space and keeps every column aligned.
+  var inboxRaw = []; // unfiltered inbox list from the last renderBoard() pass
+  var inboxSaveTimer = null;
+
+  function inboxVisible(list) {
+    var f = cfg.inbox || {};
+    var drafts = f.drafts !== false;
+    var author = String(f.author || "").trim().replace(/^@+/, "").toLowerCase();
+    var kw = String(f.keyword || "").trim().toLowerCase();
+    if (drafts && !author && !kw) return list;
+    return list.filter(function (c) {
+      if (!drafts && c.isDraft) return false;
+      if (author && String(c.author || "").toLowerCase().indexOf(author) < 0) return false;
+      if (kw) {
+        var hit = String(c.title || "").toLowerCase().indexOf(kw) >= 0 ||
+          (/^\d+$/.test(kw) && String(c.number).indexOf(kw) >= 0);
+        if (!hit) return false;
+      }
+      return true;
+    });
+  }
+
+  function countHtml(shown, total) {
+    return shown === total ? String(total) : shown + '<span class="pbo-count-of">/' + total + "</span>";
+  }
+
+  function listHtml(shown, colKey, hadCards) {
+    if (!shown.length) return '<div class="pbo-empty">' + (hadCards ? "no match" : "empty") + "</div>";
+    return shown.map(function (c) { return cardHtml(c, colKey); }).join("");
+  }
+
+  function filterBarHtml() {
+    var f = cfg.inbox;
+    return '<div class="pbo-col-filter">' +
+      '<label class="pbo-f-check" title="Include draft pull requests"><input type="checkbox" data-inbox-drafts' + (f.drafts !== false ? " checked" : "") + ">draft</label>" +
+      '<input class="pbo-f-input" type="text" data-inbox-author placeholder="@author" value="' + esc(f.author) + '" autocomplete="off" spellcheck="false" title="Only PRs by this author (login substring, @ optional)">' +
+      '<input class="pbo-f-input" type="text" data-inbox-keyword placeholder="keyword" value="' + esc(f.keyword) + '" autocomplete="off" spellcheck="false" title="Only PRs whose title contains this text (or whose number contains it)">' +
+      "</div>";
+  }
+
+  // Re-render ONLY the Inbox column's cards and count: a full renderBoard() on
+  // every keystroke would replace the focused input and drop the caret.
+  function refreshInboxColumn() {
+    var colEl = document.querySelector('#pbo-body .pbo-col[data-col="inbox"]');
+    if (!colEl) return;
+    var shown = inboxVisible(inboxRaw);
+    var countEl = colEl.querySelector(".pbo-col-head .pbo-count");
+    if (countEl) countEl.innerHTML = countHtml(shown.length, inboxRaw.length);
+    var listEl = colEl.querySelector(".pbo-col-list");
+    if (listEl) listEl.innerHTML = listHtml(shown, "inbox", inboxRaw.length > 0);
+  }
+
+  // Filters are a per-browser preference (like `sort`): localStorage only,
+  // never the host-synced config, and debounced so typing writes once.
+  function saveInboxSoon() {
+    if (inboxSaveTimer) clearTimeout(inboxSaveTimer);
+    inboxSaveTimer = setTimeout(function () {
+      inboxSaveTimer = null;
+      try { localStorage.setItem(CFG_KEY, JSON.stringify(cfg)); } catch (e) {}
+    }, 400);
+  }
+
   function renderBoard() {
     var tabs = document.getElementById("pbo-tabs");
     var body = document.getElementById("pbo-body");
@@ -1264,6 +1357,15 @@
       if (!rd.ok) { body.innerHTML = loadingHtml(repo, rd); return; }
     }
     var html = "";
+    // The triage controls exist only on the PR board (the issue/mine boards have
+    // no inbox column) and live inside the Inbox header row.
+    var triage = !mineMode && !issueMode;
+    // A poll can land while a filter input has focus + a caret: remember both
+    // before the DOM replacement below, then hand them back after it.
+    var ae = document.activeElement, caret = null;
+    if (triage && ae && ae.hasAttribute && (ae.hasAttribute("data-inbox-author") || ae.hasAttribute("data-inbox-keyword"))) {
+      try { caret = ae.selectionStart; } catch (e) {}
+    }
     colsDef.forEach(function (col) {
       var list = (columnsSrc && columnsSrc[col.key]) || [];
       list.forEach(function (c) {
@@ -1279,16 +1381,24 @@
           return dir === "old" ? a.whenTs - b.whenTs : b.whenTs - a.whenTs;
         });
       }
+      var isInbox = triage && col.key === "inbox";
+      if (isInbox) inboxRaw = list;
+      var shown = isInbox ? inboxVisible(list) : list;
       var sortBtn = sortable
         ? '<button class="pbo-sort" data-sort="' + col.key + '" title="Toggle sort order">' + (dir === "old" ? "↑ old→new" : "↓ new→old") + "</button>"
         : "";
-      html += '<div class="pbo-col"><div class="pbo-col-head"><i style="background:' + col.color + '"></i>' +
-        col.name + ' <span class="pbo-count">' + list.length + "</span>" + sortBtn + "</div>";
-      if (!list.length) html += '<div class="pbo-empty">empty</div>';
-      else html += list.map(function (c) { return cardHtml(c, col.key); }).join("");
-      html += "</div>";
+      html += '<div class="pbo-col" data-col="' + col.key + '"><div class="pbo-col-head"><i style="background:' + col.color + '"></i>' +
+        col.name + ' <span class="pbo-count">' + (isInbox ? countHtml(shown.length, list.length) : list.length) + "</span>" +
+        sortBtn + (isInbox ? filterBarHtml() : "") + "</div>" +
+        '<div class="pbo-col-list">' + listHtml(shown, col.key, list.length > 0) + "</div></div>";
     });
     body.innerHTML = html;
+    if (caret !== null) {
+      var back = body.querySelector(ae.hasAttribute("data-inbox-author") ? "[data-inbox-author]" : "[data-inbox-keyword]");
+      if (back) {
+        try { back.focus(); back.setSelectionRange(caret, caret); } catch (e) { back.focus(); }
+      }
+    }
   }
 
   // Add a repository to the watch list (widget + and board tab + both land here)
@@ -1434,9 +1544,10 @@
       // children, so "blank" = structural, non-interactive elements hit exactly:
       // the body grid, a column's empty stretch, an "empty" placeholder, or the
       // tab bar's leftover space. Exact target checks (not closest) so clicks on
-      // cards/buttons inside those containers never match this branch.
+      // cards/buttons inside those containers never match this branch. The card
+      // list wrapper is included so the gaps BETWEEN cards stay "blank" too.
       var t = e.target;
-      if (t === ov || t.id === "pbo-body" || (t.classList && (t.classList.contains("pbo-col") || t.classList.contains("pbo-empty") || t.classList.contains("pbo-tabs")))) {
+      if (t === ov || t.id === "pbo-body" || (t.classList && (t.classList.contains("pbo-col") || t.classList.contains("pbo-col-list") || t.classList.contains("pbo-empty") || t.classList.contains("pbo-tabs")))) {
         ov.classList.remove("pb-show");
         return;
       }
@@ -1483,6 +1594,19 @@
         if (cardObj) openReviewSession(cardObj);
         else if (cardEl.dataset && cardEl.dataset.url) window.open(cardEl.dataset.url, "_blank");
       }
+    });
+    // Inbox triage filters: delegated, because the filter row is rebuilt by
+    // every renderBoard(). Typing rewrites only the Inbox column's card list,
+    // so the focused field and its caret survive.
+    ov.addEventListener("input", function (e) {
+      var t = e.target;
+      if (!t || !t.hasAttribute) return;
+      if (t.hasAttribute("data-inbox-drafts")) cfg.inbox.drafts = !!t.checked;
+      else if (t.hasAttribute("data-inbox-author")) cfg.inbox.author = t.value;
+      else if (t.hasAttribute("data-inbox-keyword")) cfg.inbox.keyword = t.value;
+      else return;
+      refreshInboxColumn();
+      saveInboxSoon();
     });
     document.getElementById("pbo-close").onclick = function () { ov.classList.remove("pb-show"); };
     document.getElementById("pbo-refresh").onclick = function () { refresh(true, true); };

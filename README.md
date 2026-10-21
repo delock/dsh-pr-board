@@ -123,6 +123,39 @@ and the full review + comment timeline. Then:
 draft 标记、最后提交时间及完整 review/评论时间线，据此计算"双方最后动作"、
 "批准后有无新提交"、"其他 maintainer 是否提过修改意见"等，得出最终分类。
 
+## Inbox filters / Inbox 过滤
+
+The Inbox column carries three triage controls at the right end of its **header
+row**, after the "Inbox <n>" label — a **draft** checkbox (uncheck to hide draft
+PRs), an **@author** field (login substring, `@` optional) and a **keyword**
+field (title substring, or a PR number). Sitting inline means they add no
+vertical space and every column's header and first card stay on one line. They
+narrow the cards the host already delivered, so typing is instant and costs no
+GitHub API calls. The header count switches to **shown/total** while anything is
+hidden, and the column shows "no match" instead of an empty inbox when
+everything is filtered away. Filters are a per-browser view preference (like the
+sort toggle), stored in `localStorage`; they do not sync to the host and do not
+change the sidebar counters.
+
+Caveat: the host fetches the **newest 100 open PRs** as the inbox candidate
+pool (`INBOX_POOL` in `index.js`), so filters refine that pool — they cannot
+surface a PR outside it. The search API serves 100 per page, so this pool costs
+exactly **one** search request per refresh cycle — the same single request the
+old 40-item pool cost — and it needs no GraphQL detail calls.
+
+Inbox 列的**列头行**右端、紧跟 "Inbox <n>" 之后有三个分诊控件：**draft** 勾选框
+（取消勾选即隐藏 draft PR）、**@author** 输入框（作者登录名子串，可省略 `@`）和
+**keyword** 输入框（标题子串，或 PR 编号）。放在同一行意味着它们不占额外竖向
+空间，五列的列头与首张卡片始终对齐。它们只过滤 host 已取回的卡片，输入即时生效、
+不消耗 GitHub API。有内容被隐藏时列头计数变成 **显示数/总数**；全部被过滤掉时
+显示 "no match" 而不是空 inbox。过滤条件属于每个浏览器的显示偏好（和排序开关
+一样），存在 `localStorage`，不同步到 host，也不改变侧边栏计数。
+
+注意：host 以**最新的 100 个 open PR**（`index.js` 的 `INBOX_POOL`）作为 inbox
+候选池，过滤只在这个池子里收窄，无法捞出池外的 PR。搜索 API 每页最多 100 条，
+所以这个池子正好**一次** search 请求（和原来 40 条池子一样，不额外多花），
+且不需要 GraphQL 详情调用。
+
 ## Privacy / 隐私
 
 All queries run locally through your own `gh` CLI. No third-party service, no

@@ -36,6 +36,13 @@ const GH_BIN = "gh";
 const SEARCH_FIELDS = "number,title,url,author,createdAt,updatedAt,closedAt,state,isDraft";
 // `gh search issues --json` rejects PR-only fields like isDraft.
 const ISSUE_SEARCH_FIELDS = "number,title,url,author,createdAt,updatedAt,closedAt,state";
+// Inbox candidate pool: the newest OPEN PRs fetched for triage, from which the
+// client-side draft/author/keyword filters narrow. GitHub's search API serves
+// 100 per page, so 100 is exactly ONE search request — the same single request
+// the old 40-item pool cost, i.e. a deeper triage pool is free. (200 was
+// measured at two requests; not worth a second one.) Inbox cards need no
+// GraphQL detail calls, so the pool depth adds no GraphQL load either.
+const INBOX_POOL = 100;
 
 const GH_SETUP_HINT =
   "GitHub CLI (gh) not found on the DSH host. Install it from https://cli.github.com/ " +
@@ -486,7 +493,7 @@ async function collect(repo, me, days) {
     ghSearch(repo, [`reviewed-by:${me}`], [...open, "--limit", "50"]),
     ghSearch(repo, [`commenter:${me}`], [...open, "--limit", "50"]),
     ghSearch(repo, [`reviewed-by:${me}`], ["--sort", "updated", "--limit", "30"]),
-    ghSearch(repo, [], [...open, "--sort", "created", "--limit", "40"]),
+    ghSearch(repo, [], [...open, "--sort", "created", "--limit", String(INBOX_POOL)]),
     iss(ghSearchIssues(repo, [`assignee:${me}`], [...open, "--limit", "50"])),
     iss(ghSearchIssues(repo, [`mentions:${me}`], [...open, "--limit", "50"])),
     iss(ghSearchIssues(repo, [`commenter:${me}`], [...open, "--limit", "50"])),
@@ -527,8 +534,10 @@ async function collect(repo, me, days) {
     cols[verdict.state].push(card(d, verdict, { when, whenTs }));
   }
 
-  // inbox: newest open PRs I'm not involved in (updatedAt, not createdAt — a
-  // 40-day-old PR the author still pushes to is active)
+  // inbox: newest open PRs I'm not involved in, up to INBOX_POOL deep (the
+  // client filters narrow this pool by draft/author/keyword). Filtered on
+  // updatedAt, not createdAt — a 40-day-old PR the author still pushes to is
+  // active.
   for (const p of newest) {
     if (involvedMap.has(p.number) || (p.author && p.author.login) === me) continue;
     if (!active(p.updatedAt)) continue;
