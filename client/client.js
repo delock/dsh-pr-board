@@ -123,7 +123,7 @@
 #pr-board-overlay .pbo-card:hover{border-color:rgba(255,255,255,.25);background:#232935}
 #pr-board-overlay .pbo-num{font-weight:700;color:#7aa7ff;margin-right:4px;text-decoration:none;cursor:pointer}
 #pr-board-overlay .pbo-card:hover .pbo-num{text-decoration:underline}
-#pr-board-overlay .pbo-title-line{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;padding-right:16px}
+#pr-board-overlay .pbo-title-line{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;padding-right:16px;padding-left:17px}
 #pr-board-overlay .pbo-meta{display:flex;gap:6px;align-items:center;margin-top:5px;opacity:.65;font-size:11px;flex-wrap:wrap}
 #pr-board-overlay .pbo-reason{padding:0 6px;border-radius:6px;font-size:11px;background:rgba(255,255,255,.1);color:#fff}
 #pr-board-overlay .pbo-badge-conflict{padding:0 6px;border-radius:6px;font-size:11px;background:rgba(239,68,68,.25);color:#fca5a5}
@@ -137,6 +137,12 @@
 /* pointer-events:none until hover: on touch there is no hover, and an
    invisible-but-tappable corner button hijacked card taps (tap → GitHub
    instead of the review session). */
+/* Star toggle: dark outline by default, lit gold when starred. Sits left of
+   the title; the title line reserves matching padding. */
+#pr-board-overlay .pbo-star{position:absolute;top:3px;left:5px;width:18px;height:18px;line-height:16px;padding:0;border:none;background:transparent;font-size:14px;cursor:pointer;color:rgba(255,255,255,.22);opacity:1;pointer-events:auto}
+#pr-board-overlay .pbo-star:hover{color:rgba(255,255,255,.5)}
+#pr-board-overlay .pbo-star.pb-on{color:#fbbf24;text-shadow:0 0 6px rgba(251,191,36,.45)}
+#pr-board-overlay .pbo-card.pb-starred{border-color:rgba(251,191,36,.45)}
 #pr-board-overlay .pbo-gh{position:absolute;top:4px;right:4px;width:18px;height:18px;line-height:16px;text-align:center;padding:0;border:none;border-radius:5px;background:transparent;color:rgba(255,255,255,.4);font-size:12px;cursor:pointer;opacity:0;pointer-events:none}
 #pr-board-overlay .pbo-card:hover .pbo-gh{opacity:1;pointer-events:auto}
 @media (hover:none){#pr-board-overlay .pbo-gh{opacity:.45;pointer-events:auto}}
@@ -170,7 +176,7 @@
   var CTX = null;
 
   var CFG_KEY = "prboard.cfg", LAST_KEY = "prboard.last", BIND_KEY = "prboard.sessions";
-  var DEFAULTS = { repos: [], user: "", workspaces: {}, autoprompt: true, inactiveDays: 30, interval: 5, sort: { waiting_me: "new", waiting_author: "new" }, inbox: { drafts: true, author: "", keyword: "" } };
+  var DEFAULTS = { repos: [], user: "", workspaces: {}, autoprompt: true, inactiveDays: 30, interval: 5, sort: { waiting_me: "new", waiting_author: "new" }, inbox: { drafts: true, author: "", keyword: "" }, stars: {} };
   var COLS = [
     { key: "waiting_me", name: "Waiting on me", color: "#60a5fa" },
     { key: "waiting_author", name: "Waiting on author", color: "#fbbf24" },
@@ -259,6 +265,14 @@
       author: typeof ib.author === "string" ? ib.author.slice(0, 80) : "",
       keyword: typeof ib.keyword === "string" ? ib.keyword.slice(0, 120) : ""
     };
+    // Starred cards ("repo#N" -> 1): a focus helper like `sort`/`inbox`, so it
+    // is per-browser and re-validated the same way.
+    var st = c.stars && typeof c.stars === "object" && !Array.isArray(c.stars) ? c.stars : {};
+    c.stars = {};
+    for (var sk in st) {
+      var m = /^([^#/\s]+\/[^#/\s]+)#(\d+)$/.exec(String(sk));
+      if (m && st[sk]) c.stars[m[1] + "#" + m[2]] = 1;
+    }
     return c;
   }
   function saveCfg() {
@@ -545,6 +559,7 @@
         }
       }
       data = v;
+      pruneMergedStars();
       renderWidget();
       renderBoard();
       if (v.ok && !quiet) { detectTransitions(v); detectMineTransitions(v); }
@@ -1212,7 +1227,11 @@
       ? '<button class="pbo-claim" data-claim="' + c.number + '">I&#39;ll review</button>' : "";
     // Two click zones: the #number anchor goes to GitHub (middle-click and
     // copy-link work natively), the rest of the card jumps into the session.
-    return '<div class="pbo-card" data-num="' + c.number + '" data-repo="' + esc(c.repo || "") + '" data-url="' + esc(c.url) + '">' +
+    // The ★ button is a third zone: it toggles the star (stopPropagation in
+    // the board click handler) without triggering a session jump.
+    var starred = isStarred(c);
+    return '<div class="pbo-card' + (starred ? " pb-starred" : "") + '" data-num="' + c.number + '" data-repo="' + esc(c.repo || "") + '" data-url="' + esc(c.url) + '">' +
+      '<button class="pbo-star' + (starred ? " pb-on" : "") + '" data-star="' + esc(starKey(c)) + '" title="' + (starred ? "Unstar" : "Star") + ' — mark this PR to find it fast" aria-pressed="' + (starred ? "true" : "false") + '">&#9733;</button>' +
       '<button class="pbo-gh" data-gh="' + esc(c.url) + '" title="Open on GitHub">↗</button>' +
       '<div class="pbo-title-line"><a class="pbo-num" data-gh="' + esc(c.url) + '" href="' + esc(c.url) + '" target="_blank" rel="noopener" title="Open #' + c.number + ' on GitHub">#' + c.number + "</a>" + esc(c.title) + "</div>" + meta + claim + "</div>";
   }
@@ -1260,6 +1279,37 @@
 
   function countHtml(shown, total) {
     return shown === total ? String(total) : shown + '<span class="pbo-count-of">/' + total + "</span>";
+  }
+
+  // ---------- card stars ----------
+  // A focus helper: click a card's ★ to light it (gold) while the PR still
+  // matters to you; click again to darken it. Stored per-browser in
+  // cfg.stars. Stars AUTO-CLEAR when the PR reaches the merged column, so the
+  // set only ever holds PRs that still exist on the board.
+  function starKey(c) { return (c.repo || currentRepo()) + "#" + c.number; }
+  function isStarred(c) { return !!(cfg.stars && cfg.stars[starKey(c)]); }
+  function toggleStar(c) {
+    var k = starKey(c);
+    if (cfg.stars && cfg.stars[k]) delete cfg.stars[k];
+    else { cfg.stars = cfg.stars || {}; cfg.stars[k] = 1; }
+    saveInboxSoon(); // same debounced localStorage write the filters use
+  }
+  // Drop stars for PRs now merged, on any board (per-repo PR columns and the
+  // "mine" panel). Runs after each good data load, so it works even while the
+  // board is closed.
+  function pruneMergedStars() {
+    if (!data || !data.ok || !cfg.stars) return;
+    var kill = {};
+    (data.repos || []).forEach(function (rd) {
+      if (!rd.ok) return;
+      (((rd.columns || {}).merged) || []).forEach(function (c) { kill[rd.repo + "#" + c.number] = 1; });
+    });
+    if (data.mine && data.mine.ok) (((data.mine.columns || {}).merged) || []).forEach(function (c) {
+      kill[(c.repo || "") + "#" + c.number] = 1;
+    });
+    var removed = false;
+    for (var k in kill) if (cfg.stars[k]) { delete cfg.stars[k]; removed = true; }
+    if (removed) { saveInboxSoon(); renderBoard(); }
   }
 
   function listHtml(shown, colKey, hadCards) {
@@ -1584,6 +1634,25 @@
           if (v.ok) { toast("PR #" + num + " added to your review queue"); refresh(true, true); }
           else { toast("Claim failed: " + (v.error || "unknown error")); claimEl.disabled = false; claimEl.textContent = "I'll review"; }
         }).catch(function () { claimEl.disabled = false; claimEl.textContent = "I'll review"; });
+        return;
+      }
+      // Star toggle: flip cfg.stars and update the DOM in place (class swap
+      // only — a full renderBoard() would rewrite the Inbox inputs and drop
+      // any caret mid-typing).
+      var starEl = e.target.closest && e.target.closest("[data-star]");
+      if (starEl) {
+        e.stopPropagation();
+        e.preventDefault();
+        var skey = starEl.getAttribute("data-star");
+        var nowOn = !(cfg.stars && cfg.stars[skey]);
+        if (nowOn) { cfg.stars = cfg.stars || {}; cfg.stars[skey] = 1; }
+        else if (cfg.stars) delete cfg.stars[skey];
+        saveInboxSoon();
+        starEl.classList.toggle("pb-on", nowOn);
+        starEl.title = (nowOn ? "Unstar" : "Star") + " — mark this PR to find it fast";
+        starEl.setAttribute("aria-pressed", nowOn ? "true" : "false");
+        var cardHost = starEl.closest && starEl.closest(".pbo-card");
+        if (cardHost) cardHost.classList.toggle("pb-starred", nowOn);
         return;
       }
       // Card click: jump into the review session for this PR (open or create).
