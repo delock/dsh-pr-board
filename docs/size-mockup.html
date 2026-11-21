@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>PR 卡片规模信息 — 示意图</title>
+<style>
+  body{margin:0;padding:24px;background:#0d1117;color:#d7dde5;font:13px/1.5 -apple-system,"Segoe UI",sans-serif}
+  h1{font-size:16px;margin:0 0 4px}
+  p.note{margin:0 0 20px;color:#8b949e;font-size:11.5px}
+  h2{font-size:13px;margin:28px 0 8px;color:#7aa7ff}
+  .board{display:grid;grid-template-columns:repeat(3,minmax(250px,1fr));gap:10px;align-items:start}
+  .card{position:relative;padding:8px 10px;border-radius:8px;background:#1c2129;color:#d7dde5;font-size:12px;line-height:1.45;border:1px solid transparent}
+  .card:hover{border-color:rgba(255,255,255,.25);background:#232935}
+  .num{font-weight:700;color:#7aa7ff;margin-right:4px;text-decoration:none}
+  .title-line{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;padding-left:17px;padding-right:16px}
+  .star{position:absolute;top:3px;left:5px;border:none;background:none;color:rgba(255,255,255,.22);font-size:14px}
+  .star.on{color:#fbbf24}
+  .gh{position:absolute;top:4px;right:4px;border:none;background:none;color:rgba(255,255,255,.4)}
+  .meta{display:flex;gap:6px;align-items:center;margin-top:5px;opacity:.65;font-size:11px;flex-wrap:wrap}
+  .chip{padding:0 6px;border-radius:6px;background:rgba(255,255,255,.1);color:#fff}
+  .b-conflict{background:rgba(239,68,68,.25);color:#fca5a5}
+  .b-cifail{background:rgba(239,68,68,.3);color:#f87171}
+  .b-draft{background:rgba(148,163,184,.25);color:#cbd5e1}
+  /* ---- 方案 A：GitHub 风格 diffstat（+绿 −红，行数合并） ---- */
+  .size{display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:600;opacity:1;margin-left:auto}
+  .size .add{color:#3fb950}
+  .size .del{color:#f85149;position:relative;top:0.5px;font-size:11.5px}
+  .size .files{color:#8b949e;font-weight:500}
+  /* ---- 方案 B：diffbar（数字 + 方块条） ---- */
+  .sizebar{display:inline-flex;align-items:center;gap:6px;font-size:11px;margin-left:auto}
+  .sizebar .add{color:#3fb950;font-weight:600}
+  .sizebar .del{color:#f85149;font-weight:600;position:relative;top:0.5px;font-size:11.5px}
+  .sizebar .files{color:#8b949e}
+  .dbar{display:inline-flex;gap:1px}
+  .dbar i{width:6px;height:6px;border-radius:2px;background:#30363d}
+  .dbar i.a{background:#3fb950}
+  .dbar i.d{background:#f85149}
+  /* ---- 方案 C：单徽章 ---- */
+  .sizebadge{margin-left:auto;padding:0 6px;border-radius:6px;font-size:11px;font-weight:600;background:rgba(255,255,255,.08);color:#c9d1d9}
+  .sizebadge .add{color:#3fb950}
+  .sizebadge .del{color:#f85149;position:relative;top:0.5px;font-size:11.5px}
+  .sep{color:rgba(255,255,255,.25);margin:0 2px}
+</style>
+</head>
+<body>
+<h1>PR 卡片规模信息 — 三种紧凑方案</h1>
+<p class="note">都放在卡片 meta 行的右侧（margin-left:auto），与 @author / 时间 / CI 徽章同一行，不占额外高度。数据来自 GraphQL 的 changedFiles / additions / deletions 三个原生字段。</p>
+
+<h2>方案 A — GitHub diffstat 风格：+234 −56 · 12 files</h2>
+<div class="board" id="boardA"></div>
+
+<h2>方案 B — 数字 + 比例方块条（一眼看加删比）</h2>
+<div class="board" id="boardB"></div>
+
+<h2>方案 C — 单个紧凑徽章：📄12 +234/−56</h2>
+<div class="board" id="boardC"></div>
+
+<script>
+function dbar(adds, dels) {
+  var total = adds + dels, MAX = 5, out = "";
+  var na = total ? Math.max(adds ? 1 : 0, Math.round(adds / total * MAX)) : 0;
+  var nd = total ? Math.max(dels ? 1 : 0, Math.round(dels / total * MAX)) : 0;
+  // cap at 5 blocks total, at least 1 of each color when nonzero
+  while (na + nd > MAX) { if (na >= nd && na > 1) na--; else if (nd > 1) nd--; else break; }
+  for (var i = 0; i < na; i++) out += '<i class="a"></i>';
+  for (var j = 0; j < nd; j++) out += '<i class="d"></i>';
+  for (var k = na + nd; k < MAX; k++) out += "<i></i>";
+  return '<span class="dbar">' + out + "</span>";
+}
+var PRArr = [
+  { n: 8265, t: "Fix gradient checkpointing with activation offload", a: "akey", when: "2 h ago", ci: "cifail", extra: "conflict", files: 14, add: 612, del: 98 },
+  { n: 8241, t: "Support FSDP + ZeRO-3 hybrid sharding config", a: "tj", when: "5 h ago", ci: "", extra: "", files: 3, add: 42, del: 7 },
+  { n: 8238, t: "docs: clarify --offload flag usage", a: "mei", when: "1 d ago", ci: "", extra: "draft", files: 1, add: 9, del: 3 }
+];
+function cardHtml(p, sizeHtml) {
+  var meta = '<div class="meta"><span>@' + p.a + "</span><span>" + p.when + "</span>";
+  if (p.extra === "conflict") meta += '<span class="chip b-conflict">conflict</span>';
+  if (p.extra === "draft") meta += '<span class="chip b-draft">draft</span>';
+  if (p.ci) meta += '<span class="chip b-cifail">CI failing</span>';
+  meta += sizeHtml + "</div>";
+  return '<div class="card"><span class="star on">★</span><span class="gh">↗</span>' +
+    '<div class="title-line"><a class="num" href="#">#' + p.n + "</a>" + p.t + "</div>" + meta + "</div>";
+}
+var htmls = { boardA: "", boardB: "", boardC: "" };
+PRArr.forEach(function (p) {
+  var fa = '<span class="size" title="' + p.files + ' files changed, +' + p.add + ' -' + p.del + '">' +
+    '<span class="files">' + p.files + ' files</span><span class="add">+' + p.add + "</span><span class='del'>-" + p.del + "</span></span>";
+  var fb = '<span class="sizebar" title="' + p.files + ' files changed"><span class="files">' + p.files + "f</span>" +
+    '<span class="add">+' + p.add + "</span><span class='del'>-" + p.del + "</span>" + dbar(p.add, p.del) + "</span>";
+  var fc = '<span class="sizebadge" title="' + p.files + ' files changed, +' + p.add + ' -' + p.del + '">📄' + p.files +
+    '<span class="sep">·</span><span class="add">+' + p.add + "</span><span class='del'>-" + p.del + "</span></span>";
+  htmls.boardA += cardHtml(p, fa);
+  htmls.boardB += cardHtml(p, fb);
+  htmls.boardC += cardHtml(p, fc);
+});
+for (var id in htmls) document.getElementById(id).innerHTML = htmls[id];
+</script>
+</body>
+</html>

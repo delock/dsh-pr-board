@@ -200,6 +200,10 @@ const DETAIL_FIELDS = [
   "number title url state isDraft",
   "author { login }",
   "createdAt updatedAt",
+  // PR size stats: native scalar fields on PullRequest — they ride the same
+  // batched query, so zero extra requests. Inbox cards come from the search
+  // API (no such fields) and simply omit them client-side.
+  "changedFiles additions deletions",
   "reviewDecision mergeable isInMergeQueue mergeStateStatus autoMergeRequest { enabledAt }",
   "commits(last:1) { nodes { commit { committedDate statusCheckRollup { state } } } }",
   "reviews(last:8) { nodes { author { login } state submittedAt comments(last:5) { nodes { author { login } createdAt body } } } }",
@@ -456,6 +460,10 @@ function card(pr, verdict, extra) {
     whenTs: extra && extra.whenTs ? extra.whenTs : 0,
     mergeable: pr.mergeable,
     ci: (lastCommit && lastCommit.statusCheckRollup && lastCommit.statusCheckRollup.state) || "",
+    // PR size stats (GraphQL cards only; search-API cards leave them null)
+    files: typeof pr.changedFiles === "number" ? pr.changedFiles : null,
+    additions: typeof pr.additions === "number" ? pr.additions : null,
+    deletions: typeof pr.deletions === "number" ? pr.deletions : null,
   };
 }
 

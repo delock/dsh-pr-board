@@ -132,6 +132,13 @@
 #pr-board-overlay .pbo-badge-ciqueue{padding:0 6px;border-radius:6px;font-size:11px;background:rgba(148,163,184,.25);color:#cbd5e1}
 #pr-board-overlay .pbo-badge-cipass{padding:0 6px;border-radius:6px;font-size:11px;background:rgba(52,211,153,.2);color:#6ee7b7}
 #pr-board-overlay .pbo-badge-draft{padding:0 6px;border-radius:6px;font-size:11px;background:rgba(148,163,184,.25);color:#cbd5e1}
+/* PR size stats (GitHub diffstat style), right end of the meta row. The red
+   side carries the tuned 11.5px / +0.5px offset agreed on in the mockup
+   (docs/size-mockup.html) — optical balance vs the green figures. */
+#pr-board-overlay .pbo-size{margin-left:auto;display:inline-flex;align-items:baseline;gap:4px;font-size:11px;font-weight:600;white-space:nowrap;opacity:1}
+#pr-board-overlay .pbo-size .pb-add{color:#3fb950}
+#pr-board-overlay .pbo-size .pb-del{color:#f85149;position:relative;top:0.5px;font-size:11.5px}
+#pr-board-overlay .pbo-size .pb-files{color:#8b949e;font-weight:500}
 #pr-board-overlay .pbo-claim{margin-top:6px;width:100%;padding:3px 0;border-radius:6px;border:1px solid rgba(255,255,255,.2);background:rgba(125,211,252,.15);color:#bae6fd;font-size:11px;font-weight:600;cursor:pointer}
 #pr-board-overlay .pbo-claim:hover{background:rgba(125,211,252,.3)}
 /* pointer-events:none until hover: on touch there is no hover, and an
@@ -1207,6 +1214,22 @@
   }
 
   // ---------- board ----------
+  // ---------- PR size stats (scheme A: GitHub diffstat) ----------
+  // Compact figures: >=1000 renders as 1.2k to keep the meta row one line.
+  function pbNum(n) {
+    return n >= 10000 ? Math.round(n / 1000) + "k" : n >= 1000 ? (Math.round(n / 100) / 10).toFixed(1).replace(/\.0$/, "") + "k" : String(n);
+  }
+  // GraphQL cards carry files/additions/deletions; search-API cards (inbox,
+  // merged) leave them null and render nothing rather than a fake zero.
+  function sizeHtml(c) {
+    if (c.files == null && c.additions == null) return "";
+    return '<span class="pbo-size" title="' + (c.files == null ? "?" : c.files) + ' files changed, +' +
+      (c.additions || 0) + " -" + (c.deletions || 0) + '">' +
+      (c.files != null ? '<span class="pb-files">' + pbNum(c.files) + " files</span>" : "") +
+      '<span class="pb-add">+' + pbNum(c.additions || 0) + "</span>" +
+      '<span class="pb-del">-' + pbNum(c.deletions || 0) + "</span></span>";
+  }
+
   function cardHtml(c, colKey) {
     var reasons = c.kind === "issue" ? ISS_REASONS : (boardMode === "mine" ? MINE_REASONS : REASONS);
     var meta = '<div class="pbo-meta">' +
@@ -1221,6 +1244,7 @@
       else if (c.ci === "SUCCESS") meta += '<span class="pbo-badge-cipass">CI ✓</span>';
       if (c.mergeable === "CONFLICTING") meta += '<span class="pbo-badge-conflict">conflict</span>';
       if (c.isDraft) meta += '<span class="pbo-badge-draft">draft</span>';
+      meta += sizeHtml(c);
     }
     meta += "</div>";
     var claim = colKey === "inbox"
